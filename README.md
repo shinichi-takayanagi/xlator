@@ -1,6 +1,6 @@
-# XLATOR
+# xlator
 
-ローカルで動く翻訳ツール。
+A translation tool that runs locally.
 
 ```bash
 npm install
