@@ -8,7 +8,13 @@ This repository contains **XLATOR**, a local-first Japanese/English live convers
 
 - Read `docs/spec.md` before making product, data-model, realtime, or UI changes.
 - Consult other files under `docs/` when they are relevant to the task. Do not load every document by default.
-- If an intentional product decision changes, update the relevant document under `docs/` in the same change.
+
+## Specification maintenance
+
+- Treat `docs/spec.md` as the authoritative description of the current product behavior and implementation decisions.
+- Before handing off any change, compare the implementation with `docs/spec.md` and update the specification in the same change whenever behavior, architecture, data models, Realtime processing, or UI decisions differ.
+- Keep current behavior and future candidates clearly separated in `docs/spec.md`; never describe planned behavior as already implemented.
+- Do not merge a change while the implementation and `docs/spec.md` disagree.
 
 ## Product invariants
 
