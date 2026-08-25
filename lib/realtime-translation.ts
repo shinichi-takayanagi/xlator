@@ -30,6 +30,22 @@ function getErrorMessage(payload: ClientSecretResponse, fallback: string) {
   if (typeof payload.error === "string") return payload.error;
   return payload.error?.message ?? fallback;
 }
+
+async function createClientSecret(targetLanguage: TargetLanguage) {
+  const response = await fetch("/api/realtime/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ targetLanguage }),
+  });
+  const payload = (await response.json()) as ClientSecretResponse;
+
+  if (!response.ok || !payload.value) {
+    throw new Error(getErrorMessage(payload, "Realtimeセッションを作成できませんでした。"));
+  }
+
+  return payload.value;
+}
+
 export async function connectTranslation({
   targetLanguage,
   sourceStream,
@@ -37,20 +53,10 @@ export async function connectTranslation({
   onEvent,
   onConnectionState,
 }: ConnectOptions): Promise<TranslationConnection> {
-  const secretResponse = await fetch("/api/realtime/session", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ targetLanguage }),
-  });
-  const secretPayload = (await secretResponse.json()) as ClientSecretResponse;
-
-  if (!secretResponse.ok || !secretPayload.value) {
-    throw new Error(getErrorMessage(secretPayload, "Realtimeセッションを作成できませんでした。"));
-  }
-
-  const peerConnection = new RTCPeerConnection();
   const sourceTrack = sourceStream.getAudioTracks()[0];
   if (!sourceTrack) throw new Error("マイクの音声トラックが見つかりません。");
+
+  const peerConnection = new RTCPeerConnection();
   peerConnection.addTrack(sourceTrack, sourceStream);
 
   const translatedAudio = new Audio();
@@ -72,30 +78,46 @@ export async function connectTranslation({
     }
   };
 
-  const offer = await peerConnection.createOffer();
-  await peerConnection.setLocalDescription(offer);
+  const clientSecretPromise = createClientSecret(targetLanguage);
+  const localOfferPromise = (async () => {
+    const offer = await peerConnection.createOffer();
+    await peerConnection.setLocalDescription(offer);
+    if (!offer.sdp) throw new Error("WebRTC offerを作成できませんでした。");
+    return offer.sdp;
+  })();
 
-  const answerResponse = await fetch(
-    "https://api.openai.com/v1/realtime/translations/calls",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${secretPayload.value}`,
-        "Content-Type": "application/sdp",
+  try {
+    const [clientSecret, offerSdp] = await Promise.all([
+      clientSecretPromise,
+      localOfferPromise,
+    ]);
+    const answerResponse = await fetch(
+      "https://api.openai.com/v1/realtime/translations/calls",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${clientSecret}`,
+          "Content-Type": "application/sdp",
+        },
+        body: offerSdp,
       },
-      body: offer.sdp,
-    },
-  );
+    );
 
-  if (!answerResponse.ok) {
+    if (!answerResponse.ok) {
+      throw new Error((await answerResponse.text()) || "WebRTC接続に失敗しました。");
+    }
+
+    await peerConnection.setRemoteDescription({
+      type: "answer",
+      sdp: await answerResponse.text(),
+    });
+  } catch (error) {
+    translatedAudio.pause();
+    translatedAudio.srcObject = null;
+    events.close();
     peerConnection.close();
-    throw new Error((await answerResponse.text()) || "WebRTC接続に失敗しました。");
+    throw error;
   }
-
-  await peerConnection.setRemoteDescription({
-    type: "answer",
-    sdp: await answerResponse.text(),
-  });
 
   return {
     targetLanguage,

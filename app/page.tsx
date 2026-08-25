@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   connectTranslation,
   type TargetLanguage,
@@ -191,6 +191,29 @@ function Icon({ name }: { name: "mic" | "stop" | "download" | "volume" | "chevro
   return <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
 }
 
+const TranscriptRow = memo(function TranscriptRow({
+  language,
+  row,
+  isLatest,
+}: {
+  language: Language;
+  row: Utterance;
+  isLatest: boolean;
+}) {
+  return (
+    <article className={`transcript-row ${isLatest ? "is-latest" : ""} ${row.status === "draft" ? "is-draft" : ""}`}>
+      <div className="row-meta">
+        <span className="row-number">{String(row.sequence).padStart(2, "0")}</span>
+        <time>{row.at}</time>
+        <span className={`source-tag source-${row.sourceLanguage}`}>
+          {row.sourceLanguage === "unknown" ? "処理中" : row.sourceLanguage === language ? "原文" : "翻訳"}
+        </span>
+      </div>
+      <p lang={language}>{row[language] || "…"}</p>
+    </article>
+  );
+});
+
 function TranscriptPanel({ language, rows }: { language: Language; rows: Utterance[] }) {
   const isJapanese = language === "ja";
   const listRef = useRef<HTMLDivElement>(null);
@@ -223,16 +246,12 @@ function TranscriptPanel({ language, rows }: { language: Language; rows: Utteran
           </div>
         ) : (
           rows.map((row, index) => (
-            <article className={`transcript-row ${index === rows.length - 1 ? "is-latest" : ""} ${row.status === "draft" ? "is-draft" : ""}`} key={`${language}-${row.id}`}>
-              <div className="row-meta">
-                <span className="row-number">{String(row.sequence).padStart(2, "0")}</span>
-                <time>{row.at}</time>
-                <span className={`source-tag source-${row.sourceLanguage}`}>
-                  {row.sourceLanguage === "unknown" ? "処理中" : row.sourceLanguage === language ? "原文" : "翻訳"}
-                </span>
-              </div>
-              <p lang={language}>{row[language] || "…"}</p>
-            </article>
+            <TranscriptRow
+              key={`${language}-${row.id}`}
+              language={language}
+              row={row}
+              isLatest={index === rows.length - 1}
+            />
           ))
         )}
       </div>
@@ -268,6 +287,25 @@ function detectLanguage(text: string): Language | "unknown" {
 
 function toEventElapsed(event: TranslationEvent, fallback: number) {
   return typeof event.elapsed_ms === "number" ? event.elapsed_ms : fallback;
+}
+
+function findLastRowStartingAtOrBefore(
+  rows: Utterance[],
+  elapsedMs: number,
+  endExclusive = rows.length,
+) {
+  for (let index = Math.min(endExclusive, rows.length) - 1; index >= 0; index -= 1) {
+    if ((rows[index].startMs ?? 0) <= elapsedMs) return index;
+  }
+
+  return -1;
+}
+
+function replaceRow(rows: Utterance[], index: number, row: Utterance) {
+  if (rows[index] === row) return rows;
+  const next = rows.slice();
+  next[index] = row;
+  return next;
 }
 
 export default function Home() {
@@ -347,10 +385,7 @@ export default function Home() {
       if (activeIndex >= 0) {
         const activeStartMs = current[activeIndex].startMs ?? 0;
         if (elapsedMs + 400 < activeStartMs) {
-          index = -1;
-          for (let candidateIndex = 0; candidateIndex < activeIndex; candidateIndex += 1) {
-            if ((current[candidateIndex].startMs ?? 0) <= elapsedMs + 400) index = candidateIndex;
-          }
+          index = findLastRowStartingAtOrBefore(current, elapsedMs + 400, activeIndex);
         }
       } else if (current.length > 0) {
         const latestIndex = current.length - 1;
@@ -426,9 +461,7 @@ export default function Home() {
         en: sourceLanguage === "en" ? sourceText : row.en,
       };
 
-      return next.map((candidate, candidateIndex) => (
-        candidateIndex === index ? updated : candidate
-      ));
+      return replaceRow(next, index, updated);
     });
 
     if (finalizeTimerRef.current) window.clearTimeout(finalizeTimerRef.current);
@@ -444,18 +477,13 @@ export default function Home() {
 
     setRows((current) => {
       if (current.length === 0) return current;
-      let index = -1;
-      for (let candidateIndex = 0; candidateIndex < current.length; candidateIndex += 1) {
-        if ((current[candidateIndex].startMs ?? 0) <= elapsedMs + 400) index = candidateIndex;
-      }
+      let index = findLastRowStartingAtOrBefore(current, elapsedMs + 400);
       if (index < 0) index = current.length - 1;
 
       const row = current[index];
       if (row.sourceLanguage === targetLanguage) return current;
       const updated = { ...row, [targetLanguage]: `${row[targetLanguage]}${event.delta}` };
-      return current.map((candidate, candidateIndex) => (
-        candidateIndex === index ? updated : candidate
-      ));
+      return replaceRow(current, index, updated);
     });
   };
 

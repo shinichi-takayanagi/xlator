@@ -60,6 +60,19 @@ test("accepts source transcript deltas from both translation sessions", async ()
   assert.match(page, /candidate\.endMs > best\.endMs \+ 600/);
 });
 
+test("keeps realtime startup and transcript updates on the low-latency path", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const realtime = await readFile(
+    new URL("../lib/realtime-translation.ts", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(realtime, /Promise\.all\(\[\s*clientSecretPromise,\s*localOfferPromise/s);
+  assert.match(page, /const TranscriptRow = memo/);
+  assert.match(page, /function findLastRowStartingAtOrBefore/);
+  assert.doesNotMatch(page, /for \(let candidateIndex = 0; candidateIndex < current\.length/);
+});
+
 test("keeps audio and downloads aligned with the product rules", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 
