@@ -1,0 +1,7 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="64" height="64" rx="15" fill="#17201E"/>
+  <path d="M10 12C10 8.686 12.686 6 16 6H32V32H10V12Z" fill="#146B4C"/>
+  <path d="M32 32H54V52C54 55.314 51.314 58 48 58H32V32Z" fill="#FFFEFA"/>
+  <text x="14" y="24" fill="white" font-family="sans-serif" font-size="14" font-weight="700">あ</text>
+  <text x="39" y="51" fill="#17201E" font-family="sans-serif" font-size="15" font-weight="700">A</text>
+</svg>
