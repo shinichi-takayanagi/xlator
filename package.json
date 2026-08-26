@@ -2,8 +2,22 @@
   "name": "xlator",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "npm@10.9.2",
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=22.13.0",
+    "npm": "10.9.2"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "22.13.0",
+      "onFail": "error"
+    },
+    "packageManager": {
+      "name": "npm",
+      "version": "10.9.2",
+      "onFail": "error"
+    }
   },
   "scripts": {
     "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext dev",
