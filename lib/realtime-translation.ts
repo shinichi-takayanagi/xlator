@@ -23,15 +23,25 @@ type ConnectOptions = {
 
 type ClientSecretResponse = {
   value?: string;
+  expires_at?: number;
   error?: string | { message?: string };
 };
+
+type CachedClientSecret = {
+  value: string;
+  expiresAt: number;
+};
+
+const CLIENT_SECRET_EXPIRY_SKEW_MS = 5_000;
+const cachedClientSecrets = new Map<TargetLanguage, CachedClientSecret>();
+const pendingClientSecrets = new Map<TargetLanguage, Promise<string>>();
 
 function getErrorMessage(payload: ClientSecretResponse, fallback: string) {
   if (typeof payload.error === "string") return payload.error;
   return payload.error?.message ?? fallback;
 }
 
-async function createClientSecret(targetLanguage: TargetLanguage) {
+async function fetchClientSecret(targetLanguage: TargetLanguage) {
   const response = await fetch("/api/realtime/session", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -43,7 +53,42 @@ async function createClientSecret(targetLanguage: TargetLanguage) {
     throw new Error(getErrorMessage(payload, "Realtimeセッションを作成できませんでした。"));
   }
 
-  return payload.value;
+  return {
+    value: payload.value,
+    expiresAt: payload.expires_at ?? 0,
+  };
+}
+
+async function getClientSecret(targetLanguage: TargetLanguage) {
+  const cached = cachedClientSecrets.get(targetLanguage);
+  if (
+    cached &&
+    cached.expiresAt * 1_000 - Date.now() > CLIENT_SECRET_EXPIRY_SKEW_MS
+  ) {
+    return cached.value;
+  }
+
+  const pending = pendingClientSecrets.get(targetLanguage);
+  if (pending) return pending;
+
+  const request = fetchClientSecret(targetLanguage)
+    .then((secret) => {
+      if (
+        secret.expiresAt * 1_000 - Date.now() > CLIENT_SECRET_EXPIRY_SKEW_MS
+      ) {
+        cachedClientSecrets.set(targetLanguage, secret);
+      }
+      return secret.value;
+    })
+    .finally(() => pendingClientSecrets.delete(targetLanguage));
+  pendingClientSecrets.set(targetLanguage, request);
+  return request;
+}
+
+export async function prefetchTranslationClientSecrets() {
+  await Promise.all(
+    (["en", "ja"] as const).map((targetLanguage) => getClientSecret(targetLanguage)),
+  );
 }
 
 export async function connectTranslation({
@@ -78,7 +123,7 @@ export async function connectTranslation({
     }
   };
 
-  const clientSecretPromise = createClientSecret(targetLanguage);
+  const clientSecretPromise = getClientSecret(targetLanguage);
   const localOfferPromise = (async () => {
     const offer = await peerConnection.createOffer();
     await peerConnection.setLocalDescription(offer);
