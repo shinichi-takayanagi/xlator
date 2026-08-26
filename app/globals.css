@@ -44,6 +44,9 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(20, 107, 76, .28
 .realtime-badge { font-size: 9px; line-height: 1; letter-spacing: .14em; font-weight: 800; border: 1px solid #c8cbc4; border-radius: 999px; padding: 7px 10px 6px; color: #656d69; background: rgba(255,255,255,.45); }
 .local-label { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #65706c; font-size: 11px; display: flex; align-items: center; gap: 7px; }
 .local-dot { width: 7px; height: 7px; border-radius: 50%; background: #4ab678; box-shadow: 0 0 0 4px rgba(74,182,120,.13); }
+.github-link { width: 32px; height: 32px; display: grid; place-items: center; color: #59625f; border: 1px solid transparent; border-radius: 8px; transition: color .15s ease, background .15s ease, border-color .15s ease; }
+.github-link:hover { color: var(--ink); background: rgba(255,255,255,.65); border-color: #d5d8d0; }
+.github-icon { width: 20px; height: 20px; }
 
 .workspace {
   width: calc(100% - 24px);
@@ -172,6 +175,7 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(20, 107, 76, .28
   .site-header { height: 56px; padding: 0 16px; }
   .brand { font-size: 12px; }
   .brand-mark { width: 33px; height: 27px; }
+  .header-meta { gap: 12px; }
   .realtime-badge { display: none; }
   .workspace { width: calc(100% - 20px); height: calc(100dvh - 56px); min-height: 464px; padding: 10px 0; gap: 9px; }
   .control-bar { flex-basis: 112px; border-radius: 12px; }

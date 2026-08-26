@@ -14,19 +14,21 @@ async function render() {
   );
 }
 
-test("server-renders the XLATOR interface", async () => {
+test("server-renders the xlator interface", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>XLATOR/);
+  assert.match(html, /<title>xlator/);
   assert.match(html, /日本語ログ/);
   assert.match(html, /English log/);
   assert.match(html, /こんちわ、今日は暑いですね/);
   assert.match(html, /Yep, I(?:'|&#x27;)m fine/);
   assert.match(html, /ありがとう。また月曜日に！/);
   assert.match(html, /Thanks. See you on Monday!/);
+  assert.match(html, /href="https:\/\/github\.com\/shinichi-takayanagi\/xlator"/);
+  assert.match(html, /aria-label="GitHubでリポジトリを開く"/);
   assert.doesNotMatch(html, /codex-preview/);
   assert.doesNotMatch(html, /react-loading-skeleton/);
 });

@@ -191,6 +191,15 @@ function Icon({ name }: { name: "mic" | "stop" | "download" | "volume" | "chevro
   return <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
 }
 
+function GitHubIcon() {
+  return (
+    <svg className="github-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3.28-.36 6.72-1.61 6.72-7.05A5.44 5.44 0 0 0 19.28 3.7 5.07 5.07 0 0 0 19.14.2S18 0 15 1.5a13.38 13.38 0 0 0-6 0C6 .2 4.86.2 4.86.2a5.07 5.07 0 0 0-.14 3.5 5.44 5.44 0 0 0-1.44 3.75c0 5.43 3.44 6.68 6.72 7.05A4.8 4.8 0 0 0 9 18v4" />
+      <path d="M9 18c-4.51 2-5-2-7-2" />
+    </svg>
+  );
+}
+
 const TranscriptRow = memo(function TranscriptRow({
   language,
   row,
@@ -630,13 +639,22 @@ export default function Home() {
   return (
     <main className="app-shell">
       <header className="site-header">
-        <a className="brand" href="#top" aria-label="XLATOR ホーム">
+        <a className="brand" href="#top" aria-label="xlator ホーム">
           <span className="brand-mark"><span>あ</span><span>A</span></span>
-          <span>XLATOR</span>
+          <span>xlator</span>
         </a>
         <div className="header-meta">
           <span className="realtime-badge">REALTIME</span>
           <span className="local-label"><span className="local-dot" /> localhost</span>
+          <a
+            className="github-link"
+            href="https://github.com/shinichi-takayanagi/xlator"
+            target="_blank"
+            rel="noreferrer"
+            aria-label="GitHubでリポジトリを開く"
+          >
+            <GitHubIcon />
+          </a>
         </div>
       </header>
 

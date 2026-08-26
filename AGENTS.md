@@ -2,7 +2,7 @@
 
 ## Project
 
-This repository contains **XLATOR**, a local-first Japanese/English live conversation translator built with TypeScript and OpenAI Realtime APIs.
+This repository contains **xlator**, a local-first Japanese/English live conversation translator built with TypeScript and OpenAI Realtime APIs.
 
 ## Required context
 
