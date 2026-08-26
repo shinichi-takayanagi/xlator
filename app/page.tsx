@@ -1,8 +1,9 @@
 "use client";
 
-import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   connectTranslation,
+  prefetchTranslationClientSecrets,
   type TargetLanguage,
   type TranslationConnection,
   type TranslationEvent,
@@ -31,6 +32,11 @@ type SourceCandidate = {
 };
 
 type SourceCandidates = Partial<Record<TargetLanguage, SourceCandidate>>;
+
+const VAD_SILENCE_MS = 600;
+const FALLBACK_FINALIZE_MS = 1_200;
+const VAD_MIN_RMS = 0.012;
+const VAD_NOISE_MULTIPLIER = 2.5;
 
 const DEMO_UTTERANCES: Utterance[] = [
   {
@@ -332,6 +338,11 @@ export default function Home() {
   const sourceCandidatesRef = useRef<Record<string, SourceCandidates>>({});
   const selectedSourceSessionRef = useRef<Record<string, TargetLanguage>>({});
   const finalizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const vadAudioContextRef = useRef<AudioContext | null>(null);
+  const vadAnimationFrameRef = useRef<number | null>(null);
+  const vadSpeechDetectedRef = useRef(false);
+  const vadSilenceStartedAtRef = useRef<number | null>(null);
+  const vadNoiseFloorRef = useRef(0.01);
   const sessionStartedAtRef = useRef(0);
   const lastSourceLanguageRef = useRef<Language | "unknown">("unknown");
   const audioModeRef = useRef<AudioMode>("off");
@@ -348,6 +359,11 @@ export default function Home() {
       .then((payload: { configured?: boolean }) => setApiConfigured(Boolean(payload.configured)))
       .catch(() => setApiConfigured(false));
   }, []);
+
+  useEffect(() => {
+    if (apiConfigured !== true) return;
+    void prefetchTranslationClientSecrets().catch(() => undefined);
+  }, [apiConfigured]);
 
   const syncAudioOutputs = () => {
     const mode = audioModeRef.current;
@@ -370,17 +386,79 @@ export default function Home() {
     syncAudioOutputs();
   }, [audioMode]);
 
-  const finalizeCurrentRow = () => {
+  const finalizeCurrentRow = useCallback(() => {
     const activeId = activeRowIdRef.current;
     if (!activeId) return;
+    if (finalizeTimerRef.current) window.clearTimeout(finalizeTimerRef.current);
+    finalizeTimerRef.current = null;
     setRows((current) => current.map((row) => (
       row.id === activeId ? { ...row, status: "final" as const } : row
     )));
     activeRowIdRef.current = null;
-  };
+  }, []);
+
+  const stopLocalVad = useCallback(() => {
+    if (vadAnimationFrameRef.current !== null) {
+      window.cancelAnimationFrame(vadAnimationFrameRef.current);
+    }
+    vadAnimationFrameRef.current = null;
+    const audioContext = vadAudioContextRef.current;
+    vadAudioContextRef.current = null;
+    if (audioContext && audioContext.state !== "closed") {
+      void audioContext.close().catch(() => undefined);
+    }
+    vadSpeechDetectedRef.current = false;
+    vadSilenceStartedAtRef.current = null;
+    vadNoiseFloorRef.current = 0.01;
+  }, []);
+
+  const startLocalVad = useCallback((sourceStream: MediaStream) => {
+    stopLocalVad();
+    const audioContext = new AudioContext();
+    const source = audioContext.createMediaStreamSource(sourceStream);
+    const analyser = audioContext.createAnalyser();
+    analyser.fftSize = 512;
+    analyser.smoothingTimeConstant = 0.2;
+    source.connect(analyser);
+
+    const samples = new Float32Array(analyser.fftSize);
+    vadAudioContextRef.current = audioContext;
+
+    const sampleVoiceActivity = (now: number) => {
+      analyser.getFloatTimeDomainData(samples);
+      let sumSquares = 0;
+      for (const sample of samples) sumSquares += sample * sample;
+      const rms = Math.sqrt(sumSquares / samples.length);
+      const speechThreshold = Math.max(
+        VAD_MIN_RMS,
+        vadNoiseFloorRef.current * VAD_NOISE_MULTIPLIER,
+      );
+
+      if (rms >= speechThreshold) {
+        vadSpeechDetectedRef.current = true;
+        vadSilenceStartedAtRef.current = null;
+      } else {
+        vadNoiseFloorRef.current += (rms - vadNoiseFloorRef.current) * 0.05;
+        if (vadSpeechDetectedRef.current) {
+          vadSilenceStartedAtRef.current ??= now;
+          if (now - vadSilenceStartedAtRef.current >= VAD_SILENCE_MS) {
+            finalizeCurrentRow();
+            vadSpeechDetectedRef.current = false;
+            vadSilenceStartedAtRef.current = null;
+          }
+        }
+      }
+
+      vadAnimationFrameRef.current = window.requestAnimationFrame(sampleVoiceActivity);
+    };
+
+    vadAnimationFrameRef.current = window.requestAnimationFrame(sampleVoiceActivity);
+  }, [finalizeCurrentRow, stopLocalVad]);
 
   const handleSourceDelta = (targetLanguage: TargetLanguage, event: TranslationEvent) => {
     if (!event.delta) return;
+    vadSpeechDetectedRef.current = true;
+    vadSilenceStartedAtRef.current = null;
     const elapsedMs = toEventElapsed(
       event,
       Math.max(0, Date.now() - sessionStartedAtRef.current),
@@ -474,7 +552,10 @@ export default function Home() {
     });
 
     if (finalizeTimerRef.current) window.clearTimeout(finalizeTimerRef.current);
-    finalizeTimerRef.current = window.setTimeout(finalizeCurrentRow, 1200);
+    finalizeTimerRef.current = window.setTimeout(
+      finalizeCurrentRow,
+      FALLBACK_FINALIZE_MS,
+    );
   };
 
   const handleOutputDelta = (targetLanguage: TargetLanguage, event: TranslationEvent) => {
@@ -507,16 +588,17 @@ export default function Home() {
     }
   };
 
-  const closeRealtimeResources = () => {
+  const closeRealtimeResources = useCallback(() => {
+    stopLocalVad();
     for (const connection of connectionsRef.current) connection.close();
     connectionsRef.current = [];
     sourceStreamRef.current?.getTracks().forEach((track) => track.stop());
     sourceStreamRef.current = null;
     if (finalizeTimerRef.current) window.clearTimeout(finalizeTimerRef.current);
     finalizeTimerRef.current = null;
-  };
+  }, [stopLocalVad]);
 
-  useEffect(() => () => closeRealtimeResources(), []);
+  useEffect(() => () => closeRealtimeResources(), [closeRealtimeResources]);
 
   const startConversation = async () => {
     if (apiConfigured === false) {
@@ -546,6 +628,7 @@ export default function Home() {
         },
       });
       sourceStreamRef.current = sourceStream;
+      startLocalVad(sourceStream);
 
       const results = await Promise.allSettled(
         (["en", "ja"] as const).map((targetLanguage) => connectTranslation({

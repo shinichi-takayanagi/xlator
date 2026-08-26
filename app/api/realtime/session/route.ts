@@ -45,6 +45,10 @@ export async function POST(request: Request) {
       "OpenAI-Safety-Identifier": "xlator-local-user",
     },
     body: JSON.stringify({
+      expires_after: {
+        anchor: "created_at",
+        seconds: 600,
+      },
       session: {
         model: "gpt-realtime-translate",
         audio: {

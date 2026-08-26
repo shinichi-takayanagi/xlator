@@ -42,6 +42,7 @@ test("keeps the standard OpenAI API key on the server", async () => {
 
   assert.match(route, /process\.env\.OPENAI_API_KEY/);
   assert.match(route, /realtime\/translations\/client_secrets/);
+  assert.match(route, /expires_after:[\s\S]*seconds: 600/);
   assert.doesNotMatch(route, /NEXT_PUBLIC_OPENAI_API_KEY/);
   assert.match(exampleEnv, /^OPENAI_API_KEY=/m);
   assert.doesNotMatch(exampleEnv, /sk-[A-Za-z0-9]{20,}/);
@@ -70,6 +71,13 @@ test("keeps realtime startup and transcript updates on the low-latency path", as
   );
 
   assert.match(realtime, /Promise\.all\(\[\s*clientSecretPromise,\s*localOfferPromise/s);
+  assert.match(realtime, /export async function prefetchTranslationClientSecrets/);
+  assert.match(realtime, /cached\.expiresAt \* 1_000 - Date\.now\(\)/);
+  assert.match(page, /prefetchTranslationClientSecrets\(\)/);
+  assert.match(page, /const VAD_SILENCE_MS = 600/);
+  assert.match(page, /const FALLBACK_FINALIZE_MS = 1_200/);
+  assert.match(page, /createMediaStreamSource\(sourceStream\)/);
+  assert.match(page, /now - vadSilenceStartedAtRef\.current >= VAD_SILENCE_MS/);
   assert.match(page, /const TranscriptRow = memo/);
   assert.match(page, /function findLastRowStartingAtOrBefore/);
   assert.doesNotMatch(page, /for \(let candidateIndex = 0; candidateIndex < current\.length/);
