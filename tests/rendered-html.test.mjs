@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import ts from "typescript";
 
 async function render() {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
@@ -74,13 +75,37 @@ test("keeps realtime startup and transcript updates on the low-latency path", as
   assert.match(realtime, /export async function prefetchTranslationClientSecrets/);
   assert.match(realtime, /cached\.expiresAt \* 1_000 - Date\.now\(\)/);
   assert.match(page, /prefetchTranslationClientSecrets\(\)/);
-  assert.match(page, /const VAD_SILENCE_MS = 600/);
   assert.match(page, /const FALLBACK_FINALIZE_MS = 1_200/);
   assert.match(page, /createMediaStreamSource\(sourceStream\)/);
-  assert.match(page, /now - vadSilenceStartedAtRef\.current >= VAD_SILENCE_MS/);
+  assert.match(page, /getVadSilenceDurationMs\(\s*activeSourceTextRef\.current/);
+  assert.match(page, /now - vadSilenceStartedAtRef\.current >= silenceDurationMs/);
+  assert.doesNotMatch(
+    page,
+    /const handleSourceDelta[\s\S]*?vadSpeechDetectedRef\.current = true;\s*vadSilenceStartedAtRef\.current = null;/,
+  );
   assert.match(page, /const TranscriptRow = memo/);
   assert.match(page, /function findLastRowStartingAtOrBefore/);
   assert.doesNotMatch(page, /for \(let candidateIndex = 0; candidateIndex < current\.length/);
+});
+
+test("shortens local VAD silence after complete utterances", async () => {
+  const source = await readFile(new URL("../lib/local-vad.ts", import.meta.url), "utf8");
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const moduleUrl = `data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`;
+  const {
+    COMPLETE_UTTERANCE_SILENCE_MS,
+    DEFAULT_UTTERANCE_SILENCE_MS,
+    getVadSilenceDurationMs,
+  } = await import(moduleUrl);
+
+  assert.equal(COMPLETE_UTTERANCE_SILENCE_MS, 320);
+  assert.equal(DEFAULT_UTTERANCE_SILENCE_MS, 450);
+  assert.equal(getVadSilenceDurationMs("今日は暑いですね。"), 320);
+  assert.equal(getVadSilenceDurationMs("Are you okay?\""), 320);
+  assert.equal(getVadSilenceDurationMs("まだ話している途中"), 450);
+  assert.ok(DEFAULT_UTTERANCE_SILENCE_MS < 600);
 });
 
 test("keeps audio and downloads aligned with the product rules", async () => {

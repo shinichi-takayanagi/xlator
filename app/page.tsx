@@ -8,6 +8,7 @@ import {
   type TranslationConnection,
   type TranslationEvent,
 } from "@/lib/realtime-translation";
+import { getVadSilenceDurationMs } from "@/lib/local-vad";
 
 type Language = "ja" | "en";
 type AudioMode = "off" | "ja" | "en" | "auto";
@@ -33,7 +34,6 @@ type SourceCandidate = {
 
 type SourceCandidates = Partial<Record<TargetLanguage, SourceCandidate>>;
 
-const VAD_SILENCE_MS = 600;
 const FALLBACK_FINALIZE_MS = 1_200;
 const VAD_MIN_RMS = 0.012;
 const VAD_NOISE_MULTIPLIER = 2.5;
@@ -337,12 +337,13 @@ export default function Home() {
   const activeRowIdRef = useRef<string | null>(null);
   const sourceCandidatesRef = useRef<Record<string, SourceCandidates>>({});
   const selectedSourceSessionRef = useRef<Record<string, TargetLanguage>>({});
-  const finalizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const finalizeTimerRef = useRef<number | null>(null);
   const vadAudioContextRef = useRef<AudioContext | null>(null);
   const vadAnimationFrameRef = useRef<number | null>(null);
   const vadSpeechDetectedRef = useRef(false);
   const vadSilenceStartedAtRef = useRef<number | null>(null);
   const vadNoiseFloorRef = useRef(0.01);
+  const activeSourceTextRef = useRef("");
   const sessionStartedAtRef = useRef(0);
   const lastSourceLanguageRef = useRef<Language | "unknown">("unknown");
   const audioModeRef = useRef<AudioMode>("off");
@@ -395,6 +396,7 @@ export default function Home() {
       row.id === activeId ? { ...row, status: "final" as const } : row
     )));
     activeRowIdRef.current = null;
+    activeSourceTextRef.current = "";
   }, []);
 
   const stopLocalVad = useCallback(() => {
@@ -410,6 +412,7 @@ export default function Home() {
     vadSpeechDetectedRef.current = false;
     vadSilenceStartedAtRef.current = null;
     vadNoiseFloorRef.current = 0.01;
+    activeSourceTextRef.current = "";
   }, []);
 
   const startLocalVad = useCallback((sourceStream: MediaStream) => {
@@ -441,7 +444,10 @@ export default function Home() {
         vadNoiseFloorRef.current += (rms - vadNoiseFloorRef.current) * 0.05;
         if (vadSpeechDetectedRef.current) {
           vadSilenceStartedAtRef.current ??= now;
-          if (now - vadSilenceStartedAtRef.current >= VAD_SILENCE_MS) {
+          const silenceDurationMs = getVadSilenceDurationMs(
+            activeSourceTextRef.current,
+          );
+          if (now - vadSilenceStartedAtRef.current >= silenceDurationMs) {
             finalizeCurrentRow();
             vadSpeechDetectedRef.current = false;
             vadSilenceStartedAtRef.current = null;
@@ -458,7 +464,6 @@ export default function Home() {
   const handleSourceDelta = (targetLanguage: TargetLanguage, event: TranslationEvent) => {
     if (!event.delta) return;
     vadSpeechDetectedRef.current = true;
-    vadSilenceStartedAtRef.current = null;
     const elapsedMs = toEventElapsed(
       event,
       Math.max(0, Date.now() - sessionStartedAtRef.current),
@@ -528,6 +533,7 @@ export default function Home() {
 
       const sourceText = candidates[bestSession]?.text ?? row.sourceText ?? "";
       if (sourceText === (row.sourceText ?? "")) return current;
+      activeSourceTextRef.current = sourceText;
 
       const sourceLanguage = detectLanguage(sourceText);
       if (
@@ -617,6 +623,7 @@ export default function Home() {
     sourceCandidatesRef.current = {};
     selectedSourceSessionRef.current = {};
     lastSourceLanguageRef.current = "unknown";
+    activeSourceTextRef.current = "";
     sessionStartedAtRef.current = Date.now();
 
     try {
