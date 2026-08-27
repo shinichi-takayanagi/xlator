@@ -1,6 +1,6 @@
 # xlator 仕様書
 
-更新日: 2026-08-26
+更新日: 2026-08-27
 ステータス: Realtime接続MVP実装済み
 
 ## 1. 目的
@@ -142,10 +142,11 @@ OpenAI Realtime Translation API
 
 - 恒久キーは `OPENAI_API_KEY` 環境変数からのみ読む
 - ローカル開発ではGit管理外の `.env.local` に設定する
-- `.env.example` には変数名とダミー値だけを置く
+- `.env.example` のAPIキーは空のままにし、文字起こしモデルには非機密の既定値だけを置く
 - ブラウザはローカルAPIから短期クライアントシークレットだけを受け取る
 - `NEXT_PUBLIC_*` など、ブラウザへ埋め込まれる環境変数へAPIキーを設定しない
-- Realtime入力文字起こしモデルは `gpt-realtime-whisper` とする
+- Realtime入力文字起こしモデルはサーバー側の `OPENAI_TRANSCRIPTION_MODEL` 環境変数で指定する
+- `OPENAI_TRANSCRIPTION_MODEL` が未設定または空の場合は `gpt-live-transcribe` を使う。`.env.example` にもこの既定値を記載する
 - 入力ノイズ低減は `far_field` を使う
 
 `GET /api/realtime/session` はキー設定有無だけを返し、キー値は返さない。`POST` は `ja` または `en` を受け取り、有効期間10分の短期シークレットを作る。
