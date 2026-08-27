@@ -8,7 +8,7 @@ A translation tool that runs locally.
 
 ## How to install
 
-Use Node.js 22.13.0 and npm 10.9.2. If you use nvm, run `nvm use` first.
+Use Node.js 24.20.0 (LTS) and npm 11.19.0. If you use nvm, run `nvm use` first.
 
 ```bash
 npm ci
