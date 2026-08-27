@@ -42,10 +42,14 @@ test("keeps the standard OpenAI API key on the server", async () => {
   const exampleEnv = await readFile(new URL("../.env.example", import.meta.url), "utf8");
 
   assert.match(route, /process\.env\.OPENAI_API_KEY/);
+  assert.match(route, /process\.env\.OPENAI_TRANSCRIPTION_MODEL/);
+  assert.match(route, /DEFAULT_TRANSCRIPTION_MODEL = "gpt-live-transcribe"/);
+  assert.match(route, /transcription: \{ model: transcriptionModel \}/);
   assert.match(route, /realtime\/translations\/client_secrets/);
   assert.match(route, /expires_after:[\s\S]*seconds: 600/);
   assert.doesNotMatch(route, /NEXT_PUBLIC_OPENAI_API_KEY/);
   assert.match(exampleEnv, /^OPENAI_API_KEY=/m);
+  assert.match(exampleEnv, /^OPENAI_TRANSCRIPTION_MODEL=gpt-live-transcribe$/m);
   assert.doesNotMatch(exampleEnv, /sk-[A-Za-z0-9]{20,}/);
 });
 

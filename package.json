@@ -10,12 +10,12 @@
   "devEngines": {
     "runtime": {
       "name": "node",
-      "version": "22.13.0",
+      "version": ">=22.13.0",
       "onFail": "error"
     },
     "packageManager": {
       "name": "npm",
-      "version": "10.9.2",
+      "version": ">=10.9.2 <12",
       "onFail": "error"
     }
   },
