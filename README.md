@@ -24,6 +24,7 @@ npm run dev
 npm run dev        # ローカル開発
 npm run verify     # lint、型チェック、build、test
 npm run start      # production buildの起動
+npm run test:smoke:api -- --fixture <manifest.json> # 実音声＋実API（手動）
 ```
 
-現在の動作、アーキテクチャ、非対応範囲は[docs/spec.md](docs/spec.md)を参照してください。
+実音声のfixture形式、ローカル実行、GitHub Actions、実マイク確認は[docs/realtime-smoke.md](docs/realtime-smoke.md)を参照してください。現在の動作、アーキテクチャ、非対応範囲は[docs/spec.md](docs/spec.md)に記載しています。

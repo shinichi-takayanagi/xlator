@@ -1,0 +1,48 @@
+name: Realtime API Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      fixture:
+        description: Repository-relative fixture manifest path
+        required: true
+        default: tests/fixtures/realtime/manifest.json
+        type: string
+      case_id:
+        description: Optional single case ID
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: realtime-smoke-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: Realtime API smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Realtime API smoke test
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_TRANSCRIPTION_MODEL: gpt-live-transcribe
+          REALTIME_SMOKE_FIXTURE: ${{ inputs.fixture }}
+          REALTIME_SMOKE_CASE: ${{ inputs.case_id }}
+        run: npm run test:smoke:api

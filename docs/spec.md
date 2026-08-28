@@ -223,7 +223,24 @@ OpenAI Realtime Translation API
 - モデル処理とネットワーク遅延はクライアントだけでは除去できない
 - 評価時は、接続開始、初回原文、初回翻訳、発話確定を別々に計測する
 
-## 12. 現在の非対応範囲
+## 12. テストと品質評価
+
+通常のCIでは`npm run verify`を実行し、lint、型チェック、production build、実APIを使わない挙動テストを必須とする。
+
+実音声と実APIの確認には`npm run test:smoke:api`を使う。ランナーは非圧縮16-bit PCM WAVを読み、チャンネルをモノラルへ統合して24kHz PCM16へ変換し、Realtime TranslationのWebSocketへ100ms単位で実時間送信する。
+
+- `session.input_transcript.delta`を正解書き起こしと比較する
+- 日本語と日英混在はCER、英語はWERを使う
+- `session.output_transcript.delta`は代表訳との誤り率と必須語句カバー率を確認する
+- 翻訳音声デルタが空でないことを確認する
+- 音声末尾で`session.close`を送り、`session.closed`まで待つ
+- 初回原文、初回翻訳、初回翻訳音声、セッション終了のレイテンシを出力する
+
+API費用、モデル出力の揺らぎ、外部障害から通常PRの必須チェックにはせず、GitHub Actionsの手動`Realtime API Smoke` workflowで実行する。APIキーはActions Secretの`OPENAI_API_KEY`からだけ渡す。現時点では実発話WAVと正解データが未登録のため、ランナー、fixture例、workflowだけを実装済みとする。
+
+物理マイクはCIでは再現せず、マイク権限、WebRTC接続、日英交互発話、翻訳音声、停止をリリース前にブラウザで手動確認する。詳細手順とfixture形式は`docs/realtime-smoke.md`を正とする。
+
+## 13. 現在の非対応範囲
 
 - 話者分離、話者ラベル
 - 重なり発話の分離
@@ -234,17 +251,18 @@ OpenAI Realtime Translation API
 - 固有名詞辞書
 - 接続の自動再試行
 - 専用VADによる高精度な発話境界
+- 物理マイクを使う自動E2Eテスト
 
-## 13. 将来候補
+## 14. 将来候補
 
-1. 実音声による日英コードスイッチング評価セット
+1. 実発話WAVを使う日英コードスイッチングgolden setの拡充
 2. 発話境界と2セッション間アラインメントの改善
 3. 録音保存とセッション履歴
 4. 後処理による話者分離（`A` / `B`）
 5. 誤認識・誤訳の手修正
 6. 固有名詞辞書
 
-## 14. 主要ファイル
+## 15. 主要ファイル
 
 ```text
 AGENTS.md                              Codex向け作業規約
@@ -260,13 +278,18 @@ lib/local-vad.ts                       ローカルVADの無音時間決定
 lib/realtime-translation.ts            WebRTC接続
 lib/translation-types.ts               共有データ型
 lib/utterance-alignment.ts             言語判定と発話対応付け
+lib/realtime-smoke.ts                   WAV変換、Realtime WebSocket、精度評価
+scripts/realtime-smoke.ts               実APIスモークテストCLI
+tests/fixtures/realtime/                実音声manifestとgolden set
+.github/workflows/realtime-smoke.yml    手動の実APIスモークテスト
+docs/realtime-smoke.md                  fixture・実行・実マイク確認手順
 worker/index.ts                        Vinext Workerエントリ
 .env.example                           環境変数例
 ```
 
 DB、認証、サンプルAPIなど、現行MVPで使わない雛形コードは置かない。
 
-## 15. 受け入れ確認
+## 16. 受け入れ確認
 
 - 初期画面で左右の最新ログが表示される
 - デスクトップで左右余白が最小限になっている
@@ -278,6 +301,8 @@ DB、認証、サンプルAPIなど、現行MVPで使わない雛形コードは
 - 片方の入力文字起こしが止まっても、もう片方の候補へ追従する
 - 翻訳音声は元言語と反対側だけ再生される
 - TXT / CSV / JSON / SRTをダウンロードできる
+- 実音声fixtureはAPI接続なしで形式とWAV変換を検証できる
+- 手動workflowから実APIスモークテストを実行できる
 - APIキーがブラウザHTML、JavaScript、ダウンロードへ含まれない
 - ヘッダーのGitHubアイコンから本リポジトリを新しいタブで開ける
 - `npm run verify` が成功する
