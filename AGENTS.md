@@ -31,4 +31,4 @@ This repository contains **xlator**, a local-first Japanese/English live convers
 - Keep UI copy primarily in Japanese; use plain, accessible labels and visible focus states.
 - Treat the current sample transcript as deterministic initial-screen fixture data. Starting a Realtime session replaces it with live rows.
 - Prefer small components and explicit types over framework abstractions.
-- Before handoff, run `npm run build`. Run lint or focused tests when the change warrants them.
+- Before handoff, run `npm run verify`. Add focused tests when behavior changes.

@@ -1,8 +1,8 @@
+import type { TargetLanguage } from "@/lib/translation-types";
+
 const OPENAI_CLIENT_SECRET_URL =
   "https://api.openai.com/v1/realtime/translations/client_secrets";
 const DEFAULT_TRANSCRIPTION_MODEL = "gpt-live-transcribe";
-
-type TargetLanguage = "ja" | "en";
 
 function isTargetLanguage(value: unknown): value is TargetLanguage {
   return value === "ja" || value === "en";

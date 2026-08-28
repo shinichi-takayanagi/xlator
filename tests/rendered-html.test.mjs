@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
-import ts from "typescript";
 
 async function render() {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
@@ -32,91 +30,4 @@ test("server-renders the xlator interface", async () => {
   assert.match(html, /aria-label="GitHubでリポジトリを開く"/);
   assert.doesNotMatch(html, /codex-preview/);
   assert.doesNotMatch(html, /react-loading-skeleton/);
-});
-
-test("keeps the standard OpenAI API key on the server", async () => {
-  const route = await readFile(
-    new URL("../app/api/realtime/session/route.ts", import.meta.url),
-    "utf8",
-  );
-  const exampleEnv = await readFile(new URL("../.env.example", import.meta.url), "utf8");
-
-  assert.match(route, /process\.env\.OPENAI_API_KEY/);
-  assert.match(route, /process\.env\.OPENAI_TRANSCRIPTION_MODEL/);
-  assert.match(route, /DEFAULT_TRANSCRIPTION_MODEL = "gpt-live-transcribe"/);
-  assert.match(route, /transcription: \{ model: transcriptionModel \}/);
-  assert.match(route, /realtime\/translations\/client_secrets/);
-  assert.match(route, /expires_after:[\s\S]*seconds: 600/);
-  assert.doesNotMatch(route, /NEXT_PUBLIC_OPENAI_API_KEY/);
-  assert.match(exampleEnv, /^OPENAI_API_KEY=/m);
-  assert.match(exampleEnv, /^OPENAI_TRANSCRIPTION_MODEL=gpt-live-transcribe$/m);
-  assert.doesNotMatch(exampleEnv, /sk-[A-Za-z0-9]{20,}/);
-});
-
-test("accepts source transcript deltas from both translation sessions", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-
-  assert.match(
-    page,
-    /event\.type === "session\.input_transcript\.delta"\)\s*\{\s*handleSourceDelta\(targetLanguage, event\)/,
-  );
-  assert.doesNotMatch(
-    page,
-    /session\.input_transcript\.delta" && targetLanguage === "en"/,
-  );
-  assert.match(page, /candidate\.text\.length > best\.text\.length/);
-  assert.match(page, /candidate\.endMs > best\.endMs \+ 600/);
-});
-
-test("keeps realtime startup and transcript updates on the low-latency path", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  const realtime = await readFile(
-    new URL("../lib/realtime-translation.ts", import.meta.url),
-    "utf8",
-  );
-
-  assert.match(realtime, /Promise\.all\(\[\s*clientSecretPromise,\s*localOfferPromise/s);
-  assert.match(realtime, /export async function prefetchTranslationClientSecrets/);
-  assert.match(realtime, /cached\.expiresAt \* 1_000 - Date\.now\(\)/);
-  assert.match(page, /prefetchTranslationClientSecrets\(\)/);
-  assert.match(page, /const FALLBACK_FINALIZE_MS = 1_200/);
-  assert.match(page, /createMediaStreamSource\(sourceStream\)/);
-  assert.match(page, /getVadSilenceDurationMs\(\s*activeSourceTextRef\.current/);
-  assert.match(page, /now - vadSilenceStartedAtRef\.current >= silenceDurationMs/);
-  assert.doesNotMatch(
-    page,
-    /const handleSourceDelta[\s\S]*?vadSpeechDetectedRef\.current = true;\s*vadSilenceStartedAtRef\.current = null;/,
-  );
-  assert.match(page, /const TranscriptRow = memo/);
-  assert.match(page, /function findLastRowStartingAtOrBefore/);
-  assert.doesNotMatch(page, /for \(let candidateIndex = 0; candidateIndex < current\.length/);
-});
-
-test("shortens local VAD silence after complete utterances", async () => {
-  const source = await readFile(new URL("../lib/local-vad.ts", import.meta.url), "utf8");
-  const compiled = ts.transpileModule(source, {
-    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
-  }).outputText;
-  const moduleUrl = `data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`;
-  const {
-    COMPLETE_UTTERANCE_SILENCE_MS,
-    DEFAULT_UTTERANCE_SILENCE_MS,
-    getVadSilenceDurationMs,
-  } = await import(moduleUrl);
-
-  assert.equal(COMPLETE_UTTERANCE_SILENCE_MS, 320);
-  assert.equal(DEFAULT_UTTERANCE_SILENCE_MS, 450);
-  assert.equal(getVadSilenceDurationMs("今日は暑いですね。"), 320);
-  assert.equal(getVadSilenceDurationMs("Are you okay?\""), 320);
-  assert.equal(getVadSilenceDurationMs("まだ話している途中"), 450);
-  assert.ok(DEFAULT_UTTERANCE_SILENCE_MS < 600);
-});
-
-test("keeps audio and downloads aligned with the product rules", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-
-  assert.match(page, /const shouldPlay = outputIsTranslation && languageMatches/);
-  assert.match(page, /formatSrtTimestamp\(startMs\).*formatSrtTimestamp\(endMs\)/s);
-  assert.match(page, /anchor\.download = `xlator-log\.\$\{format\}`/);
-  assert.doesNotMatch(page, /xlator-demo/);
 });

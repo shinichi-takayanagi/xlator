@@ -1,6 +1,6 @@
 # xlator 仕様書
 
-更新日: 2026-08-27
+更新日: 2026-08-28
 ステータス: Realtime接続MVP実装済み
 
 ## 1. 目的
@@ -88,10 +88,14 @@ Yep, I'm fine
 ### 接続状態
 
 - `待機中`: 開始前または停止後
+- `APIキー未設定`: 起動時の設定確認で `OPENAI_API_KEY` が見つからない
 - `接続中`: マイク取得後、Realtimeセッション確立中
 - `リスニング中`: 日本語向け・英語向けの両セッションが接続済み
 - `接続エラー`: API設定、マイク、WebRTC、Realtimeイベントのいずれかで失敗
 - 2セッションの片方だけが接続できた場合は開始せず、両方を閉じてエラーとする
+- SDP応答の設定だけでは接続済みとみなさず、両方の `RTCPeerConnection.connectionState` が `connected` になってから `リスニング中` へ移る
+- 接続確立が15秒以内に完了しない場合はタイムアウトエラーとする
+- `接続中` の停止操作は進行中のWebRTC接続をキャンセルし、遅れて接続が成立して `リスニング中` へ戻ることを防ぐ
 
 ## 5. データモデル
 
@@ -194,7 +198,7 @@ OpenAI Realtime Translation API
 - 英語入力では日本語音声だけを再生可能
 - 明示言語が元言語と同じ場合は再生しない
 - `自動` は元言語判定後に反対側を再生する
-- 言語判定前は両方ミュートする
+- セッション開始時と次の発話の音声検出時に言語判定を `unknown` へ戻し、言語判定前は両方ミュートする
 
 ## 10. ダウンロード
 
@@ -203,7 +207,7 @@ OpenAI Realtime Translation API
 - TXT: 日本語ログと英語ログを見出し付きで出力
 - CSV: 番号、時刻、元言語、日本語、英語を出力
 - JSON: `Utterance[]` を出力
-- SRT: 実際の `startMs` / `endMs` を使い、両言語を1字幕へ出力。初期データは4秒間隔の仮時刻を使う
+- SRT: ライブデータではRealtimeイベントの `elapsed_ms` に基づく `startMs` / `endMs` を使い、両言語を1字幕へ出力する。`endMs` は最後に採用した入力文字起こしデルタの時刻であり、実音声の厳密な終端ではない。初期データは4秒間隔の仮時刻を使う
 
 ## 11. レイテンシ方針
 
@@ -245,11 +249,17 @@ OpenAI Realtime Translation API
 ```text
 AGENTS.md                              Codex向け作業規約
 docs/spec.md                           本仕様書
-app/page.tsx                           UI、状態、イベント処理、ダウンロード
+app/page.tsx                           画面構成、Realtime状態、イベント処理
+app/components/transcript-panel.tsx    日英ログパネル
+app/components/ui-icons.tsx            UIアイコンと波形
 app/globals.css                        レイアウトとスタイル
 app/api/realtime/session/route.ts      短期シークレット発行
+lib/demo-utterances.ts                 初期画面fixture
+lib/download-log.ts                    TXT / CSV / JSON / SRT生成
 lib/local-vad.ts                       ローカルVADの無音時間決定
 lib/realtime-translation.ts            WebRTC接続
+lib/translation-types.ts               共有データ型
+lib/utterance-alignment.ts             言語判定と発話対応付け
 worker/index.ts                        Vinext Workerエントリ
 .env.example                           環境変数例
 ```
@@ -270,4 +280,4 @@ DB、認証、サンプルAPIなど、現行MVPで使わない雛形コードは
 - TXT / CSV / JSON / SRTをダウンロードできる
 - APIキーがブラウザHTML、JavaScript、ダウンロードへ含まれない
 - ヘッダーのGitHubアイコンから本リポジトリを新しいタブで開ける
-- `npm run lint`、`npm run build`、`npm test` が成功する
+- `npm run verify` が成功する
