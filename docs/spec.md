@@ -1,7 +1,7 @@
 # xlator 仕様書
 
 更新日: 2026-08-28
-ステータス: Realtime接続MVP実装済み
+ステータス: Realtime接続MVP実装済み／実音声・実API確認待ち
 
 ## 1. 目的
 
@@ -236,9 +236,38 @@ OpenAI Realtime Translation API
 - 音声末尾で`session.close`を送り、`session.closed`まで待つ
 - 初回原文、初回翻訳、初回翻訳音声、セッション終了のレイテンシを出力する
 
-API費用、モデル出力の揺らぎ、外部障害から通常PRの必須チェックにはせず、GitHub Actionsの手動`Realtime API Smoke` workflowで実行する。APIキーはActions Secretの`OPENAI_API_KEY`からだけ渡す。現時点では実発話WAVと正解データが未登録のため、ランナー、fixture例、workflowだけを実装済みとする。
+API費用、モデル出力の揺らぎ、外部障害から通常PRの必須チェックにはせず、GitHub Actionsの手動`Realtime API Smoke` workflowで実行する。APIキーはActions Secretの`OPENAI_API_KEY`からだけ渡す。
 
 物理マイクはCIでは再現せず、マイク権限、WebRTC接続、日英交互発話、翻訳音声、停止をリリース前にブラウザで手動確認する。詳細手順とfixture形式は`docs/realtime-smoke.md`を正とする。
+
+### 現在の実装・検証状況
+
+| 対象 | 実装状況 | 検証状況 | 現在の扱い |
+| --- | --- | --- | --- |
+| ブラウザのRealtime接続MVP | 実装済み | production buildと接続・イベント処理の自動テストに成功 | 実マイクと実APIを組み合わせた確認は未実施 |
+| 通常CI | `npm run verify`を実行するGitHub Actionsを実装済み | 現在の変更ブランチでlint、型チェック、build、23テストに成功 | PRの必須品質ゲートとして使用する |
+| 実APIスモークCLI | WAV変換、WebSocket送信、CER/WER、翻訳語句、翻訳音声、レイテンシ、正常終了判定を実装済み | APIを呼ばない`--validate-only`をCLI入口まで自動テスト済み | 実API呼び出しは未実施 |
+| 実音声fixture | manifest例と入力検証を実装済み | 合成テスト用WAVで変換処理を自動テスト済み | 実発話WAV、正解書き起こし、正解翻訳は未登録 |
+| 手動GitHub Actions | `workflow_dispatch`の`Realtime API Smoke`を実装済み | workflowファイル追加後も通常CIに成功。実API呼び出しは未実施 | 実行に必要なfixture、APIキー登録、default branchへの反映が未完了 |
+| 物理マイク確認 | 手動手順を`docs/realtime-smoke.md`へ定義済み | 未実施 | 自動CIではなくリリース前手動確認とする |
+
+### 残課題と完了条件
+
+1. 実発話WAVと正解データを登録する
+   - 最低限、日本語から英語、英語から日本語を含める
+   - 日英が発話ごとに切り替わるケース、数字・日時・固有名詞を含める
+   - `tests/fixtures/realtime/manifest.json`と参照WAVを追加し、`--validate-only`を成功させる
+2. GitHub Actionsの実API実行条件を整える
+   - Actions Secretまたは保護Environmentへ`OPENAI_API_KEY`を登録する
+   - workflowがdefault branchへ反映された後に`Realtime API Smoke`を手動実行する
+   - 入力文字起こし、翻訳、翻訳音声、`session.closed`がすべて成功した結果を残す
+3. 物理マイクでブラウザMVPを確認する
+   - `docs/realtime-smoke.md`の5手順を実行する
+   - 接続、日英交互発話、行対応、翻訳音声、接続中・接続後停止を確認する
+4. 初回の実測結果から閾値を調整する
+   - 現在の原文0.35、翻訳0.65を初期値とし、正常ケースの揺らぎと見逃したくない誤りを確認して固定する
+
+上記1〜3が成功するまでは、実APIスモークと実マイク確認を「実装済み」ではなく「基盤・手順実装済み、実地検証待ち」と表記する。
 
 ## 13. 現在の非対応範囲
 

@@ -6,14 +6,19 @@ This repository contains **xlator**, a local-first Japanese/English live convers
 
 ## Required context
 
-- Read `docs/spec.md` before making product, data-model, realtime, or UI changes.
+- Read `docs/spec.md` at the start of every task, including code, configuration, CI/CD, test, refactoring, and documentation changes.
 - Consult other files under `docs/` when they are relevant to the task. Do not load every document by default.
 
 ## Specification maintenance
 
 - Treat `docs/spec.md` as the authoritative description of the current product behavior and implementation decisions.
-- Before handing off any change, compare the implementation with `docs/spec.md` and update the specification in the same change whenever behavior, architecture, data models, Realtime processing, or UI decisions differ.
+- Before editing, identify the relevant current behavior, implementation status, verification status, and remaining work described in `docs/spec.md`.
+- After editing, inspect the complete diff and compare every code, configuration, CI/CD, test, refactoring, and documentation change with `docs/spec.md`.
+- Update `docs/spec.md` in the same change whenever behavior, architecture, data models, Realtime processing, UI, testing, CI/CD, operational setup, implementation status, verification status, or remaining work differs.
 - Keep current behavior and future candidates clearly separated in `docs/spec.md`; never describe planned behavior as already implemented.
+- Keep `implemented`, `implemented but not verified`, and `not implemented` states explicit. Never mark an API, real-device, or manual test complete unless it was actually run successfully.
+- Record unresolved prerequisites and concrete completion conditions in the current-status or remaining-work section of `docs/spec.md`.
+- If a change does not require a specification edit, explicitly confirm during handoff that the implementation-to-spec comparison was performed and no divergence was found.
 - Do not merge a change while the implementation and `docs/spec.md` disagree.
 
 ## Product invariants
@@ -31,4 +36,4 @@ This repository contains **xlator**, a local-first Japanese/English live convers
 - Keep UI copy primarily in Japanese; use plain, accessible labels and visible focus states.
 - Treat the current sample transcript as deterministic initial-screen fixture data. Starting a Realtime session replaces it with live rows.
 - Prefer small components and explicit types over framework abstractions.
-- Before handoff, run `npm run verify`. Add focused tests when behavior changes.
+- Before handoff, run `npm run verify`, inspect `git diff --check`, and perform the implementation-to-spec comparison above. Add focused tests when behavior changes.
