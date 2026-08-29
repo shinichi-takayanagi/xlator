@@ -1,6 +1,6 @@
 # xlator 仕様書
 
-更新日: 2026-08-28
+更新日: 2026-08-29
 ステータス: Realtime接続MVP実装済み／実音声・実API確認待ち
 
 ## 1. 目的
@@ -122,11 +122,15 @@ type Utterance = {
 
 ```text
 Browser / React / TypeScript
-  ├─ microphone capture
-  ├─ lightweight local voice activity detection
-  ├─ aligned utterance state
-  ├─ WebRTC translation session: target=en
-  └─ WebRTC translation session: target=ja
+  ├─ app/page.tsx: screen composition only
+  ├─ useConversationSession
+  │    ├─ aligned utterance state
+  │    ├─ WebRTC translation session: target=en
+  │    └─ WebRTC translation session: target=ja
+  ├─ useLocalVad
+  │    └─ microphone capture + lightweight local voice activity detection
+  └─ ConversationControls
+       └─ transient control UI state and download actions
           │ short-lived client secrets
 Local Vinext server / TypeScript
   └─ /api/realtime/session
@@ -134,6 +138,8 @@ Local Vinext server / TypeScript
 OpenAI Realtime Translation API
   └─ gpt-realtime-translate
 ```
+
+React側では、`app/page.tsx`を画面構成だけに限定する。Realtime接続・対応済み発話状態・翻訳音声制御は`useConversationSession`、Web Audio APIとRMSベースのVADライフサイクルは`useLocalVad`、ダウンロードメニューなど画面操作だけに閉じる一時状態は`ConversationControls`が担当する。機能追加時もこの責務境界を維持し、ページコンポーネントへ接続処理やVAD実装を戻さない。
 
 同じマイク音声トラックを、英語出力用と日本語出力用の2つのWebRTCセッションへ並行送信する。セッション作成も並列で行う。
 
@@ -294,26 +300,31 @@ API費用、モデル出力の揺らぎ、外部障害から通常PRの必須チ
 ## 15. 主要ファイル
 
 ```text
-AGENTS.md                              Codex向け作業規約
-docs/spec.md                           本仕様書
-app/page.tsx                           画面構成、Realtime状態、イベント処理
-app/components/transcript-panel.tsx    日英ログパネル
-app/components/ui-icons.tsx            UIアイコンと波形
-app/globals.css                        レイアウトとスタイル
-app/api/realtime/session/route.ts      短期シークレット発行
-lib/demo-utterances.ts                 初期画面fixture
-lib/download-log.ts                    TXT / CSV / JSON / SRT生成
-lib/local-vad.ts                       ローカルVADの無音時間決定
-lib/realtime-translation.ts            WebRTC接続
-lib/translation-types.ts               共有データ型
-lib/utterance-alignment.ts             言語判定と発話対応付け
+AGENTS.md                               Codex向け作業規約
+docs/spec.md                            本仕様書
+app/page.tsx                            画面構成のみ
+app/components/conversation-controls.tsx 会話操作、翻訳音声選択、ダウンロードUI
+app/components/session-error-toast.tsx  接続エラー表示
+app/components/site-header.tsx          ヘッダー
+app/components/transcript-panel.tsx     日英ログパネル
+app/components/ui-icons.tsx             UIアイコンと波形
+app/hooks/use-conversation-session.ts   Realtime接続、発話状態、翻訳音声制御
+app/hooks/use-local-vad.ts               Web Audio APIによるローカルVAD
+app/globals.css                         レイアウトとスタイル
+app/api/realtime/session/route.ts       短期シークレット発行
+lib/demo-utterances.ts                  初期画面fixture
+lib/download-log.ts                     TXT / CSV / JSON / SRT生成
+lib/local-vad.ts                        VAD無音時間の純粋ロジック
+lib/realtime-translation.ts             WebRTC接続
+lib/translation-types.ts                共有データ型
+lib/utterance-alignment.ts              言語判定と発話対応付け
 lib/realtime-smoke.ts                   WAV変換、Realtime WebSocket、精度評価
 scripts/realtime-smoke.ts               実APIスモークテストCLI
 tests/fixtures/realtime/                実音声manifestとgolden set
-.github/workflows/realtime-smoke.yml    手動の実APIスモークテスト
+.github/workflows/realtime-smoke.yml     手動の実APIスモークテスト
 docs/realtime-smoke.md                  fixture・実行・実マイク確認手順
-worker/index.ts                        Vinext Workerエントリ
-.env.example                           環境変数例
+worker/index.ts                         Vinext Workerエントリ
+.env.example                            環境変数例
 ```
 
 DB、認証、サンプルAPIなど、現行MVPで使わない雛形コードは置かない。
