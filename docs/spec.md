@@ -1,7 +1,7 @@
 # xlator 仕様書
 
-更新日: 2026-08-27
-ステータス: Realtime接続MVP実装済み
+更新日: 2026-08-28
+ステータス: Realtime接続MVP実装済み／実音声・実API確認待ち
 
 ## 1. 目的
 
@@ -88,10 +88,14 @@ Yep, I'm fine
 ### 接続状態
 
 - `待機中`: 開始前または停止後
+- `APIキー未設定`: 起動時の設定確認で `OPENAI_API_KEY` が見つからない
 - `接続中`: マイク取得後、Realtimeセッション確立中
 - `リスニング中`: 日本語向け・英語向けの両セッションが接続済み
 - `接続エラー`: API設定、マイク、WebRTC、Realtimeイベントのいずれかで失敗
 - 2セッションの片方だけが接続できた場合は開始せず、両方を閉じてエラーとする
+- SDP応答の設定だけでは接続済みとみなさず、両方の `RTCPeerConnection.connectionState` が `connected` になってから `リスニング中` へ移る
+- 接続確立が15秒以内に完了しない場合はタイムアウトエラーとする
+- `接続中` の停止操作は進行中のWebRTC接続をキャンセルし、遅れて接続が成立して `リスニング中` へ戻ることを防ぐ
 
 ## 5. データモデル
 
@@ -194,7 +198,7 @@ OpenAI Realtime Translation API
 - 英語入力では日本語音声だけを再生可能
 - 明示言語が元言語と同じ場合は再生しない
 - `自動` は元言語判定後に反対側を再生する
-- 言語判定前は両方ミュートする
+- セッション開始時と次の発話の音声検出時に言語判定を `unknown` へ戻し、言語判定前は両方ミュートする
 
 ## 10. ダウンロード
 
@@ -203,7 +207,7 @@ OpenAI Realtime Translation API
 - TXT: 日本語ログと英語ログを見出し付きで出力
 - CSV: 番号、時刻、元言語、日本語、英語を出力
 - JSON: `Utterance[]` を出力
-- SRT: 実際の `startMs` / `endMs` を使い、両言語を1字幕へ出力。初期データは4秒間隔の仮時刻を使う
+- SRT: ライブデータではRealtimeイベントの `elapsed_ms` に基づく `startMs` / `endMs` を使い、両言語を1字幕へ出力する。`endMs` は最後に採用した入力文字起こしデルタの時刻であり、実音声の厳密な終端ではない。初期データは4秒間隔の仮時刻を使う
 
 ## 11. レイテンシ方針
 
@@ -219,7 +223,53 @@ OpenAI Realtime Translation API
 - モデル処理とネットワーク遅延はクライアントだけでは除去できない
 - 評価時は、接続開始、初回原文、初回翻訳、発話確定を別々に計測する
 
-## 12. 現在の非対応範囲
+## 12. テストと品質評価
+
+通常のCIでは`npm run verify`を実行し、lint、型チェック、production build、実APIを使わない挙動テストを必須とする。
+
+実音声と実APIの確認には`npm run test:smoke:api`を使う。ランナーは非圧縮16-bit PCM WAVを読み、チャンネルをモノラルへ統合して24kHz PCM16へ変換し、Realtime TranslationのWebSocketへ100ms単位で実時間送信する。
+
+- `session.input_transcript.delta`を正解書き起こしと比較する
+- 日本語と日英混在はCER、英語はWERを使う
+- `session.output_transcript.delta`は代表訳との誤り率と必須語句カバー率を確認する
+- 翻訳音声デルタが空でないことを確認する
+- 音声末尾で`session.close`を送り、`session.closed`まで待つ
+- 初回原文、初回翻訳、初回翻訳音声、セッション終了のレイテンシを出力する
+
+API費用、モデル出力の揺らぎ、外部障害から通常PRの必須チェックにはせず、GitHub Actionsの手動`Realtime API Smoke` workflowで実行する。APIキーはActions Secretの`OPENAI_API_KEY`からだけ渡す。
+
+物理マイクはCIでは再現せず、マイク権限、WebRTC接続、日英交互発話、翻訳音声、停止をリリース前にブラウザで手動確認する。詳細手順とfixture形式は`docs/realtime-smoke.md`を正とする。
+
+### 現在の実装・検証状況
+
+| 対象 | 実装状況 | 検証状況 | 現在の扱い |
+| --- | --- | --- | --- |
+| ブラウザのRealtime接続MVP | 実装済み | production buildと接続・イベント処理の自動テストに成功 | 実マイクと実APIを組み合わせた確認は未実施 |
+| 通常CI | `npm run verify`を実行するGitHub Actionsを実装済み | 現在の変更ブランチでlint、型チェック、build、23テストに成功 | PRの必須品質ゲートとして使用する |
+| 実APIスモークCLI | WAV変換、WebSocket送信、CER/WER、翻訳語句、翻訳音声、レイテンシ、正常終了判定を実装済み | APIを呼ばない`--validate-only`をCLI入口まで自動テスト済み | 実API呼び出しは未実施 |
+| 実音声fixture | manifest例と入力検証を実装済み | 合成テスト用WAVで変換処理を自動テスト済み | 実発話WAV、正解書き起こし、正解翻訳は未登録 |
+| 手動GitHub Actions | `workflow_dispatch`の`Realtime API Smoke`を実装済み | workflowファイル追加後も通常CIに成功。実API呼び出しは未実施 | 実行に必要なfixture、APIキー登録、default branchへの反映が未完了 |
+| 物理マイク確認 | 手動手順を`docs/realtime-smoke.md`へ定義済み | 未実施 | 自動CIではなくリリース前手動確認とする |
+
+### 残課題と完了条件
+
+1. 実発話WAVと正解データを登録する
+   - 最低限、日本語から英語、英語から日本語を含める
+   - 日英が発話ごとに切り替わるケース、数字・日時・固有名詞を含める
+   - `tests/fixtures/realtime/manifest.json`と参照WAVを追加し、`--validate-only`を成功させる
+2. GitHub Actionsの実API実行条件を整える
+   - Actions Secretまたは保護Environmentへ`OPENAI_API_KEY`を登録する
+   - workflowがdefault branchへ反映された後に`Realtime API Smoke`を手動実行する
+   - 入力文字起こし、翻訳、翻訳音声、`session.closed`がすべて成功した結果を残す
+3. 物理マイクでブラウザMVPを確認する
+   - `docs/realtime-smoke.md`の5手順を実行する
+   - 接続、日英交互発話、行対応、翻訳音声、接続中・接続後停止を確認する
+4. 初回の実測結果から閾値を調整する
+   - 現在の原文0.35、翻訳0.65を初期値とし、正常ケースの揺らぎと見逃したくない誤りを確認して固定する
+
+上記1〜3が成功するまでは、実APIスモークと実マイク確認を「実装済み」ではなく「基盤・手順実装済み、実地検証待ち」と表記する。
+
+## 13. 現在の非対応範囲
 
 - 話者分離、話者ラベル
 - 重なり発話の分離
@@ -230,33 +280,45 @@ OpenAI Realtime Translation API
 - 固有名詞辞書
 - 接続の自動再試行
 - 専用VADによる高精度な発話境界
+- 物理マイクを使う自動E2Eテスト
 
-## 13. 将来候補
+## 14. 将来候補
 
-1. 実音声による日英コードスイッチング評価セット
+1. 実発話WAVを使う日英コードスイッチングgolden setの拡充
 2. 発話境界と2セッション間アラインメントの改善
 3. 録音保存とセッション履歴
 4. 後処理による話者分離（`A` / `B`）
 5. 誤認識・誤訳の手修正
 6. 固有名詞辞書
 
-## 14. 主要ファイル
+## 15. 主要ファイル
 
 ```text
 AGENTS.md                              Codex向け作業規約
 docs/spec.md                           本仕様書
-app/page.tsx                           UI、状態、イベント処理、ダウンロード
+app/page.tsx                           画面構成、Realtime状態、イベント処理
+app/components/transcript-panel.tsx    日英ログパネル
+app/components/ui-icons.tsx            UIアイコンと波形
 app/globals.css                        レイアウトとスタイル
 app/api/realtime/session/route.ts      短期シークレット発行
+lib/demo-utterances.ts                 初期画面fixture
+lib/download-log.ts                    TXT / CSV / JSON / SRT生成
 lib/local-vad.ts                       ローカルVADの無音時間決定
 lib/realtime-translation.ts            WebRTC接続
+lib/translation-types.ts               共有データ型
+lib/utterance-alignment.ts             言語判定と発話対応付け
+lib/realtime-smoke.ts                   WAV変換、Realtime WebSocket、精度評価
+scripts/realtime-smoke.ts               実APIスモークテストCLI
+tests/fixtures/realtime/                実音声manifestとgolden set
+.github/workflows/realtime-smoke.yml    手動の実APIスモークテスト
+docs/realtime-smoke.md                  fixture・実行・実マイク確認手順
 worker/index.ts                        Vinext Workerエントリ
 .env.example                           環境変数例
 ```
 
 DB、認証、サンプルAPIなど、現行MVPで使わない雛形コードは置かない。
 
-## 15. 受け入れ確認
+## 16. 受け入れ確認
 
 - 初期画面で左右の最新ログが表示される
 - デスクトップで左右余白が最小限になっている
@@ -268,6 +330,8 @@ DB、認証、サンプルAPIなど、現行MVPで使わない雛形コードは
 - 片方の入力文字起こしが止まっても、もう片方の候補へ追従する
 - 翻訳音声は元言語と反対側だけ再生される
 - TXT / CSV / JSON / SRTをダウンロードできる
+- 実音声fixtureはAPI接続なしで形式とWAV変換を検証できる
+- 手動workflowから実APIスモークテストを実行できる
 - APIキーがブラウザHTML、JavaScript、ダウンロードへ含まれない
 - ヘッダーのGitHubアイコンから本リポジトリを新しいタブで開ける
-- `npm run lint`、`npm run build`、`npm test` が成功する
+- `npm run verify` が成功する

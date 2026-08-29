@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "ja-to-en",
+      "audio": "ja-to-en.wav",
+      "sourceLanguage": "ja",
+      "targetLanguage": "en",
+      "expectedSource": "次の会議は午後三時です。",
+      "expectedTranslation": "The next meeting is at three in the afternoon.",
+      "requiredTranslationTerms": [
+        "meeting",
+        ["three", "3"]
+      ],
+      "thresholds": {
+        "maxSourceErrorRate": 0.25,
+        "maxTranslationErrorRate": 0.65,
+        "minTranslationTermCoverage": 1
+      }
+    }
+  ]
+}

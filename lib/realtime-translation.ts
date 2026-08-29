@@ -1,4 +1,6 @@
-export type TargetLanguage = "ja" | "en";
+import type { TargetLanguage } from "./translation-types";
+
+export type { TargetLanguage } from "./translation-types";
 
 export type TranslationEvent = {
   type: string;
@@ -17,6 +19,7 @@ type ConnectOptions = {
   targetLanguage: TargetLanguage;
   sourceStream: MediaStream;
   muted: boolean;
+  signal?: AbortSignal;
   onEvent: (targetLanguage: TargetLanguage, event: TranslationEvent) => void;
   onConnectionState: (targetLanguage: TargetLanguage, state: RTCPeerConnectionState) => void;
 };
@@ -33,8 +36,64 @@ type CachedClientSecret = {
 };
 
 const CLIENT_SECRET_EXPIRY_SKEW_MS = 5_000;
+const CONNECTION_TIMEOUT_MS = 15_000;
 const cachedClientSecrets = new Map<TargetLanguage, CachedClientSecret>();
 const pendingClientSecrets = new Map<TargetLanguage, Promise<string>>();
+
+function abortError(signal: AbortSignal) {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException("接続がキャンセルされました。", "AbortError");
+}
+
+export function withAbort<T>(promise: Promise<T>, signal?: AbortSignal) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(abortError(signal));
+
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortError(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => {
+      signal.removeEventListener("abort", onAbort);
+    });
+  });
+}
+
+export function waitForPeerConnection(
+  peerConnection: RTCPeerConnection,
+  signal?: AbortSignal,
+) {
+  if (peerConnection.connectionState === "connected") return Promise.resolve();
+  if (signal?.aborted) return Promise.reject(abortError(signal));
+
+  return new Promise<void>((resolve, reject) => {
+    const timeout = globalThis.setTimeout(() => {
+      finish(() => reject(new Error("Realtime接続がタイムアウトしました。")));
+    }, CONNECTION_TIMEOUT_MS);
+
+    const onStateChange = () => {
+      if (peerConnection.connectionState === "connected") {
+        finish(resolve);
+      } else if (
+        peerConnection.connectionState === "failed" ||
+        peerConnection.connectionState === "closed"
+      ) {
+        finish(() => reject(new Error("Realtimeとの接続を確立できませんでした。")));
+      }
+    };
+    const onAbort = () => finish(() => reject(abortError(signal!)));
+    const finish = (complete: () => void) => {
+      globalThis.clearTimeout(timeout);
+      peerConnection.removeEventListener("connectionstatechange", onStateChange);
+      signal?.removeEventListener("abort", onAbort);
+      complete();
+    };
+
+    peerConnection.addEventListener("connectionstatechange", onStateChange);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    onStateChange();
+  });
+}
 
 function getErrorMessage(payload: ClientSecretResponse, fallback: string) {
   if (typeof payload.error === "string") return payload.error;
@@ -95,9 +154,11 @@ export async function connectTranslation({
   targetLanguage,
   sourceStream,
   muted,
+  signal,
   onEvent,
   onConnectionState,
 }: ConnectOptions): Promise<TranslationConnection> {
+  if (signal?.aborted) throw abortError(signal);
   const sourceTrack = sourceStream.getAudioTracks()[0];
   if (!sourceTrack) throw new Error("マイクの音声トラックが見つかりません。");
 
@@ -123,8 +184,24 @@ export async function connectTranslation({
     }
   };
 
-  const clientSecretPromise = getClientSecret(targetLanguage);
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    signal?.removeEventListener("abort", close);
+    if (events.readyState === "open") {
+      events.send(JSON.stringify({ type: "session.close" }));
+    }
+    translatedAudio.pause();
+    translatedAudio.srcObject = null;
+    events.close();
+    peerConnection.close();
+  };
+  signal?.addEventListener("abort", close, { once: true });
+
+  const clientSecretPromise = withAbort(getClientSecret(targetLanguage), signal);
   const localOfferPromise = (async () => {
+    if (signal?.aborted) throw abortError(signal);
     const offer = await peerConnection.createOffer();
     await peerConnection.setLocalDescription(offer);
     if (!offer.sdp) throw new Error("WebRTC offerを作成できませんでした。");
@@ -145,6 +222,7 @@ export async function connectTranslation({
           "Content-Type": "application/sdp",
         },
         body: offerSdp,
+        signal,
       },
     );
 
@@ -156,25 +234,15 @@ export async function connectTranslation({
       type: "answer",
       sdp: await answerResponse.text(),
     });
+    await waitForPeerConnection(peerConnection, signal);
   } catch (error) {
-    translatedAudio.pause();
-    translatedAudio.srcObject = null;
-    events.close();
-    peerConnection.close();
+    close();
     throw error;
   }
 
   return {
     targetLanguage,
     audio: translatedAudio,
-    close: () => {
-      if (events.readyState === "open") {
-        events.send(JSON.stringify({ type: "session.close" }));
-      }
-      translatedAudio.pause();
-      translatedAudio.srcObject = null;
-      events.close();
-      peerConnection.close();
-    },
+    close,
   };
 }
