@@ -249,6 +249,7 @@ export function useConversationSession() {
     startAbortControllerRef.current?.abort();
     startAbortControllerRef.current = null;
     stopLocalVad();
+    activeSourceTextRef.current = "";
     for (const connection of connectionsRef.current) connection.close();
     connectionsRef.current = [];
     sourceStreamRef.current?.getTracks().forEach((track) => track.stop());
