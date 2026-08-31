@@ -9,6 +9,11 @@ This repository contains **xlator**, a local-first Japanese/English live convers
 - Read `docs/spec.md` at the start of every task, including code, configuration, CI/CD, test, refactoring, and documentation changes.
 - Consult other files under `docs/` when they are relevant to the task. Do not load every document by default.
 
+## Language
+
+- Write all repository content and project communication in English, including documentation, code comments, test descriptions, commit and pull request text, and handoff notes.
+- Use Japanese only where the product requires it, such as Japanese UI copy, Japanese speech or transcript samples, localization data, and related test fixtures.
+
 ## Specification maintenance
 
 - Treat `docs/spec.md` as the authoritative description of the current product behavior and implementation decisions.

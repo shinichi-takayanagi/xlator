@@ -94,8 +94,9 @@ Yep, I'm fine
 - `接続エラー`: API設定、マイク、WebRTC、Realtimeイベントのいずれかで失敗
 - 2セッションの片方だけが接続できた場合は開始せず、両方を閉じてエラーとする
 - SDP応答の設定だけでは接続済みとみなさず、両方の `RTCPeerConnection.connectionState` が `connected` になってから `リスニング中` へ移る
-- 接続確立が15秒以内に完了しない場合はタイムアウトエラーとする
+- 短期シークレット取得、WebRTC offerとSDP応答、peer connection確立を含む開始処理全体が15秒以内に完了しない場合はタイムアウトエラーとする
 - `接続中` の停止操作は進行中のWebRTC接続をキャンセルし、遅れて接続が成立して `リスニング中` へ戻ることを防ぐ
+- 接続後にRealtime APIの`error`イベントを受信した場合は、マイク、両方のWebRTC接続、VAD、確定タイマーを停止して`接続エラー`へ移る
 
 ## 5. データモデル
 
@@ -251,7 +252,7 @@ API費用、モデル出力の揺らぎ、外部障害から通常PRの必須チ
 | 対象 | 実装状況 | 検証状況 | 現在の扱い |
 | --- | --- | --- | --- |
 | ブラウザのRealtime接続MVP | 実装済み | production buildと接続・イベント処理の自動テストに成功 | 実マイクと実APIを組み合わせた確認は未実施 |
-| 通常CI | `npm run verify`を実行するGitHub Actionsを実装済み | 現在の変更ブランチでlint、型チェック、build、23テストに成功 | PRの必須品質ゲートとして使用する |
+| 通常CI | `npm run verify`を実行するGitHub Actionsを実装済み | 現在の変更ブランチでlint、型チェック、build、26テストに成功 | PRの必須品質ゲートとして使用する |
 | 実APIスモークCLI | WAV変換、WebSocket送信、CER/WER、翻訳語句、翻訳音声、レイテンシ、正常終了判定を実装済み | APIを呼ばない`--validate-only`をCLI入口まで自動テスト済み | 実API呼び出しは未実施 |
 | 実音声fixture | manifest例と入力検証を実装済み | 合成テスト用WAVで変換処理を自動テスト済み | 実発話WAV、正解書き起こし、正解翻訳は未登録 |
 | 手動GitHub Actions | `workflow_dispatch`の`Realtime API Smoke`を実装済み | workflowファイル追加後も通常CIに成功。実API呼び出しは未実施 | 実行に必要なfixture、APIキー登録、default branchへの反映が未完了 |
