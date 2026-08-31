@@ -11,7 +11,8 @@ This repository contains **xlator**, a local-first Japanese/English live convers
 
 ## Language
 
-- Write all repository content and project communication in English, including documentation, code comments, test descriptions, commit and pull request text, and handoff notes.
+- Write all repository content in English, including documentation, code comments, test descriptions, and commit and pull request text.
+- Communicate with the user in the language they use. Use Japanese for progress updates and handoff reports when the user writes in Japanese.
 - Use Japanese only where the product requires it, such as Japanese UI copy, Japanese speech or transcript samples, localization data, and related test fixtures.
 
 ## Specification maintenance

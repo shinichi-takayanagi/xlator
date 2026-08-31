@@ -1,41 +1,41 @@
-# xlator 仕様書
+# xlator Specification
 
-更新日: 2026-08-29
-ステータス: Realtime接続MVP実装済み／実音声・実API確認待ち
+Last updated: 2026-09-01
+Status: Realtime connection MVP implemented; real-audio and live-API verification pending
 
-## 1. 目的
+## 1. Purpose
 
-共有マイクへ入力された日本語・英語混在の会話を、発話ごとに日本語と英語の両方へそろえて表示するローカルWebアプリを作る。
+Build a local web app that captures a conversation containing both Japanese and English through a shared microphone and displays every utterance in both languages.
 
-「ローカル」はUIとサーバーが `localhost` で動くことを指す。音声認識・翻訳にはOpenAI APIへのインターネット接続が必要で、完全オフライン動作ではない。
+"Local" means that the UI and server run on `localhost`. Speech recognition and translation require an internet connection to the OpenAI API; the app is not fully offline.
 
-## 2. 確定したプロダクト方針
+## 2. Product decisions
 
-- 実装言語はブラウザ・サーバーともにTypeScriptとする。WebRTC、React、イベント型API、共有データ型を1言語で扱えるため、PythonよりこのMVPに適する
-- 翻訳モデルは `gpt-realtime-translate` を使う
-- 入力は1本の共有マイクとする
-- 話者は発話ごとに日本語・英語を自由に切り替えられる
-- 日本語ログと英語ログを別々の会話として扱わず、1発話を1つの対応レコードとして保持する
-- デスクトップでは日本語を左、英語を右に表示する
-- 狭い画面では日本語を上、英語を下に表示する
-- 話者分離はMVP対象外とし、将来 `A` / `B` 表示を追加する
-- OpenAI APIキーはサーバーだけが保持し、ブラウザへ公開しない
-- ログ保存、録音、セッション履歴は現時点では実装しない
+- Use TypeScript for both browser and server code. It is a better fit than Python for this MVP because WebRTC, React, event-driven APIs, and shared data types can all use one language.
+- Use `gpt-realtime-translate` as the translation model.
+- Use one shared microphone as input.
+- Allow speakers to switch freely between Japanese and English on every utterance.
+- Store each utterance as one aligned record rather than treating the Japanese and English logs as separate conversations.
+- Display Japanese on the left and English on the right on desktop.
+- Stack Japanese above English on narrow screens.
+- Keep speaker diarization outside the MVP; add `A` / `B` labels in the future.
+- Keep the OpenAI API key on the server and never expose it to the browser.
+- Do not currently implement log persistence, recording, or session history.
 
-## 3. 入出力仕様
+## 3. Input and output
 
-各発話の元言語を判定し、元言語側には文字起こし、反対言語側には翻訳を表示する。
+Detect the source language of each utterance. Show a transcript on the source-language side and a translation on the opposite side.
 
-| 入力言語 | 日本語ログ | 英語ログ |
+| Input language | Japanese log | English log |
 | --- | --- | --- |
-| 日本語 | 日本語の文字起こし | 英訳 |
-| 英語 | 和訳 | 英語の文字起こし |
+| Japanese | Japanese transcript | English translation |
+| English | Japanese translation | English transcript |
 
-元言語側でもASRによる軽微な正規化は許容する。例として、`こんちわ` が `こんにちは`、`YES` が `Yes` になる可能性がある。
+Minor ASR normalization is acceptable on the source-language side. For example, `こんちわ` may become `こんにちは`, and `YES` may become `Yes`.
 
-### 受け入れ例
+### Acceptance example
 
-入力:
+Input:
 
 ```text
 こんちわ、今日は暑いですね
@@ -44,7 +44,7 @@ Yes, too hot!
 Yep, I'm fine
 ```
 
-日本語ログ:
+Japanese log:
 
 ```text
 こんちわ、今日は暑いですね
@@ -53,7 +53,7 @@ Yep, I'm fine
 はい、元気です！
 ```
 
-英語ログ:
+English log:
 
 ```text
 Hello, it is hot today
@@ -62,45 +62,45 @@ How are you?
 Yep, I'm fine
 ```
 
-## 4. UI仕様
+## 4. UI
 
-### レイアウト
+### Layout
 
-- ヘッダーに製品名、`REALTIME`、`localhost`、GitHubリポジトリへのアイコンリンクを表示する
-- 操作部に会話開始、停止、接続状態、経過時間、翻訳音声、ダウンロードを配置する
-- デスクトップでは日本語ログと英語ログを左右2列で表示する
-- 画面幅620px以下では上下2段へ切り替える
-- ワークスペースは画面のほぼ全幅を使い、デスクトップの左右余白は12pxを基準とする
-- 説明用ヒーローや対応番号の説明文は置かず、会話ログを第一表示とする
+- Show the product name, `REALTIME`, `localhost`, and an icon link to the GitHub repository in the header.
+- Provide controls for starting and stopping the conversation, connection status, elapsed time, translated audio, and downloads.
+- Display the Japanese and English logs in two columns on desktop.
+- Switch to a two-row vertical layout at widths of 620 px or less.
+- Use almost the full viewport width for the workspace, with 12 px horizontal margins as the desktop baseline.
+- Keep the conversation logs as the primary content; do not add an explanatory hero or text describing the shared row numbers.
 
-### ログ表示
+### Transcript display
 
-- 両ログは同じ発話数、順序、通し番号を持つ
-- 各行に通し番号、開始時刻、`原文` / `翻訳` / `処理中`、本文を表示する
-- 確定前の行は薄く表示する
-- 各パネルは独立して内部スクロールする
-- 新規発話と文字列デルタの到着時は、アニメーションなしで最新位置へ即時追従する
-- 初期画面にはUI確認用の16発話を表示する
-- 会話開始時に初期データを消し、ライブログへ切り替える
-- 停止後は取得済みライブログを画面に残す
-- ページ再読み込み時は初期データへ戻る
+- Keep the same utterance count, order, and sequence numbers in both logs.
+- Show the sequence number, start time, `原文` (Source), `翻訳` (Translation), or `処理中` (Processing), and the text in each row.
+- Display unfinished rows with reduced emphasis.
+- Allow each panel to scroll internally and independently.
+- Scroll immediately to the latest position, without animation, when a new utterance or text delta arrives.
+- Show 16 sample utterances on the initial screen for UI verification.
+- Clear the sample data and switch to live rows when a conversation starts.
+- Keep captured live rows visible after the conversation stops.
+- Restore the sample data after a page reload.
 
-### 接続状態
+### Connection status
 
-- `待機中`: 開始前または停止後
-- `APIキー未設定`: 起動時の設定確認で `OPENAI_API_KEY` が見つからない
-- `接続中`: マイク取得後、Realtimeセッション確立中
-- `リスニング中`: 日本語向け・英語向けの両セッションが接続済み
-- `接続エラー`: API設定、マイク、WebRTC、Realtimeイベントのいずれかで失敗
-- 2セッションの片方だけが接続できた場合は開始せず、両方を閉じてエラーとする
-- SDP応答の設定だけでは接続済みとみなさず、両方の `RTCPeerConnection.connectionState` が `connected` になってから `リスニング中` へ移る
-- 短期シークレット取得、WebRTC offerとSDP応答、peer connection確立を含む開始処理全体が15秒以内に完了しない場合はタイムアウトエラーとする
-- `接続中` の停止操作は進行中のWebRTC接続をキャンセルし、遅れて接続が成立して `リスニング中` へ戻ることを防ぐ
-- 接続後にRealtime APIの`error`イベントを受信した場合は、マイク、両方のWebRTC接続、VAD、確定タイマーを停止して`接続エラー`へ移る
+- `待機中` (Idle): Before starting or after stopping.
+- `APIキー未設定` (API key not configured): `OPENAI_API_KEY` was not found during the startup configuration check.
+- `接続中` (Connecting): The microphone is available and the Realtime sessions are being established.
+- `リスニング中` (Listening): Both the Japanese-target and English-target sessions are connected.
+- `接続エラー` (Connection error): API configuration, microphone access, WebRTC, or a Realtime event failed.
+- If only one of the two sessions connects, do not start; close both sessions and report an error.
+- Do not treat setting the SDP answer as a completed connection. Move to `リスニング中` only after both `RTCPeerConnection.connectionState` values are `connected`.
+- Apply one 15-second timeout to the full startup sequence, including short-lived secret acquisition, WebRTC offer and SDP answer exchange, and peer connection establishment.
+- Stopping while `接続中` must cancel the in-progress WebRTC connection and prevent a late connection from returning the UI to `リスニング中`.
+- If a connected session receives a Realtime API `error` event, stop the microphone, both WebRTC connections, VAD, and finalization timer, then move to `接続エラー`.
 
-## 5. データモデル
+## 5. Data model
 
-日本語・英語のログを別配列にせず、次の対応レコードを配列で保持する。
+Keep aligned records in one array rather than maintaining separate Japanese and English log arrays.
 
 ```ts
 type Utterance = {
@@ -117,9 +117,9 @@ type Utterance = {
 };
 ```
 
-初期表示データでは時刻文字列と翻訳済み本文だけを持ち、ライブデータでは `sourceText`、ミリ秒時刻、状態も保持する。
+Initial sample data contains only display-time strings and translated text. Live data also contains `sourceText`, millisecond timestamps, and status.
 
-## 6. システム構成
+## 6. System architecture
 
 ```text
 Browser / React / TypeScript
@@ -140,210 +140,210 @@ OpenAI Realtime Translation API
   └─ gpt-realtime-translate
 ```
 
-React側では、`app/page.tsx`を画面構成だけに限定する。Realtime接続・対応済み発話状態・翻訳音声制御は`useConversationSession`、Web Audio APIとRMSベースのVADライフサイクルは`useLocalVad`、ダウンロードメニューなど画面操作だけに閉じる一時状態は`ConversationControls`が担当する。機能追加時もこの責務境界を維持し、ページコンポーネントへ接続処理やVAD実装を戻さない。
+On the React side, limit `app/page.tsx` to screen composition. `useConversationSession` owns the Realtime connections, aligned utterance state, and translated-audio control. `useLocalVad` owns the Web Audio API and RMS-based VAD lifecycle. `ConversationControls` owns transient UI-only state such as the download menu. Preserve these responsibility boundaries when adding features; do not move connection or VAD implementation back into the page component.
 
-同じマイク音声トラックを、英語出力用と日本語出力用の2つのWebRTCセッションへ並行送信する。セッション作成も並列で行う。
+Send the same microphone audio track to two WebRTC sessions in parallel: one targeting English output and one targeting Japanese output. Create both sessions in parallel as well.
 
-ブラウザとOpenAIの接続には専用のRealtime Translationエンドポイントを使う。
+Use the dedicated Realtime Translation endpoints for browser-to-OpenAI connections:
 
-- クライアントシークレット: `/v1/realtime/translations/client_secrets`
-- WebRTC call: `/v1/realtime/translations/calls`
+- Client secrets: `/v1/realtime/translations/client_secrets`
+- WebRTC calls: `/v1/realtime/translations/calls`
 
-## 7. OpenAI API設定とセキュリティ
+## 7. OpenAI API configuration and security
 
-- 恒久キーは `OPENAI_API_KEY` 環境変数からのみ読む
-- ローカル開発ではGit管理外の `.env.local` に設定する
-- `.env.example` のAPIキーは空のままにし、文字起こしモデルには非機密の既定値だけを置く
-- ブラウザはローカルAPIから短期クライアントシークレットだけを受け取る
-- `NEXT_PUBLIC_*` など、ブラウザへ埋め込まれる環境変数へAPIキーを設定しない
-- Realtime入力文字起こしモデルはサーバー側の `OPENAI_TRANSCRIPTION_MODEL` 環境変数で指定する
-- `OPENAI_TRANSCRIPTION_MODEL` が未設定または空の場合は `gpt-live-transcribe` を使う。`.env.example` にもこの既定値を記載する
-- 入力ノイズ低減は `far_field` を使う
+- Read the long-lived key only from the `OPENAI_API_KEY` environment variable.
+- Store it in the gitignored `.env.local` file during local development.
+- Keep the API key empty in `.env.example`; only include a non-sensitive default for the transcription model.
+- Return only short-lived client secrets from the local API to the browser.
+- Never store the API key in browser-exposed environment variables such as `NEXT_PUBLIC_*`.
+- Configure the Realtime input transcription model through the server-side `OPENAI_TRANSCRIPTION_MODEL` environment variable.
+- Use `gpt-live-transcribe` when `OPENAI_TRANSCRIPTION_MODEL` is unset or empty. Record the same default in `.env.example`.
+- Use `far_field` input noise reduction.
 
-`GET /api/realtime/session` はキー設定有無だけを返し、キー値は返さない。`POST` は `ja` または `en` を受け取り、有効期間10分の短期シークレットを作る。
+`GET /api/realtime/session` returns only whether a key is configured; it never returns the key value. `POST` accepts `ja` or `en` and creates a short-lived secret with a ten-minute lifetime.
 
-キー設定を確認できた時点で、ブラウザは日本語向け・英語向けの短期シークレットを並列に先読みする。取得済みシークレットは失効5秒前までメモリ内で再利用し、先読みが失敗した場合や期限切れの場合は接続開始時に再取得する。ページ保存や永続化は行わない。
+After the key configuration check succeeds, the browser prefetches the Japanese-target and English-target secrets in parallel. It reuses each secret in memory until five seconds before expiration. If prefetching fails or a secret expires, it fetches a replacement when the connection starts. Secrets are not stored in page storage or persisted.
 
-## 8. Realtimeイベント処理
+## 8. Realtime event processing
 
-### 原文
+### Source transcript
 
-両セッションの `session.input_transcript.delta` を原文候補として受け取る。英語向けセッションだけへ固定しない。
+Treat `session.input_transcript.delta` from both sessions as source-transcript candidates; do not depend exclusively on the English-target session.
 
-- セッションごとに候補文字列と最終 `elapsed_ms` を保持する
-- 文字数が長い候補を優先する
-- 別候補の時刻が600ms以上進んだ場合は、文字数が短くても進んだ候補へ切り替える
-- これにより、片方の入力文字起こしが遅延・停止しても、もう片方へ追従する
-- 日本語文字を含む場合は `ja`、Latin文字を含む場合は `en`、判定不能時は `unknown` とする
-- 元言語が決まったら、該当言語側を候補文字列で上書きする
+- Keep a candidate string and the latest `elapsed_ms` for each session.
+- Prefer the longer candidate.
+- Switch to another candidate when its timestamp advances by at least 600 ms, even if its text is shorter.
+- This allows one session to take over if the other session's input transcript is delayed or stops.
+- Classify text containing Japanese characters as `ja`, text containing Latin characters as `en`, and unclassifiable text as `unknown`.
+- After the source language is known, overwrite that language's field with the selected candidate text.
 
-### 翻訳
+### Translation
 
-`session.output_transcript.delta` を対象言語側へ追記する。ただし対象言語が元言語と同じ場合は表示へ追加しない。
+Append `session.output_transcript.delta` to the target-language side. Do not append it when the target language matches the source language.
 
-### 発話境界と対応付け
+### Utterance boundaries and alignment
 
-現行MVPではWeb Audio APIによる軽量なローカルVADと、文字起こしデルタのフォールバックタイマーを組み合わせる。
+The current MVP combines lightweight local VAD through the Web Audio API with a fallback timer for transcript deltas.
 
-- マイク入力のRMS音量と追従するノイズフロアから発話中かを推定する
-- 発話検出後、原文候補が文末記号（`。.!！？?…`）で終わる場合は320ms、それ以外は450msの無音が続いたら現在行を `final` にする
-- 遅れて到着した入力文字起こしデルタだけでは、ローカル音声から開始した無音時間の計測をリセットしない
-- VADが発話終了を検出できない場合は、入力文字起こしデルタが1.2秒途切れた時点で確定する
-- `elapsed_ms` と発話開始時刻から、翻訳デルタを直近の行へ対応付ける
-- 時刻比較には400msの許容幅を設ける
-- 確定後700ms以内の遅延入力デルタは直前行へ戻す
+- Infer active speech from the microphone's RMS level and a tracking noise floor.
+- After speech is detected, finalize the current row after 320 ms of silence when the source candidate ends in sentence punctuation (`。.!！？?…`), or after 450 ms otherwise.
+- Late input-transcript deltas alone do not reset the silence interval that began from local audio.
+- If VAD does not detect the end of speech, finalize the row after 1.2 seconds without an input-transcript delta.
+- Align translation deltas with the nearest recent row using `elapsed_ms` and utterance start times.
+- Allow a 400 ms tolerance in timestamp comparisons.
+- Route delayed input deltas back to the preceding row for up to 700 ms after finalization.
 
-この方式では、無音がない長時間発話が1行へまとまること、静かな発話や大きな環境音で境界を誤ること、文中のポーズを発話終了とみなすこと、セッション間のタイミング差で境界がずれる可能性がある。高精度な音声分類モデルを使うVADはまだ実装していない。
+This approach can combine a long utterance without silence into one row, misidentify boundaries for quiet speech or loud background noise, treat a mid-sentence pause as an utterance boundary, or drift because of timing differences between the two sessions. VAD based on a high-accuracy audio classification model is not implemented.
 
-## 9. 翻訳音声
+## 9. Translated audio
 
-選択肢は `再生しない`、`日本語`、`English`、`自動` とする。初期値は `再生しない`。
+The options are `再生しない` (Do not play), `日本語` (Japanese), `English`, and `自動` (Auto). The default is `再生しない`.
 
-音声は必ず元言語と反対側、つまり翻訳結果だけを再生する。
+Always play only the translation, which is the language opposite the source language.
 
-- 日本語入力では英語音声だけを再生可能
-- 英語入力では日本語音声だけを再生可能
-- 明示言語が元言語と同じ場合は再生しない
-- `自動` は元言語判定後に反対側を再生する
-- セッション開始時と次の発話の音声検出時に言語判定を `unknown` へ戻し、言語判定前は両方ミュートする
+- Japanese input may play only English audio.
+- English input may play only Japanese audio.
+- Do not play audio when an explicitly selected language matches the source language.
+- `自動` plays the opposite language after source-language detection.
+- Reset language detection to `unknown` at session start and whenever audio for the next utterance is detected. Mute both outputs until the source language is known.
 
-## 10. ダウンロード
+## 10. Downloads
 
-ブラウザ内で現在の対応レコードからファイルを生成し、サーバー側の保存や出力APIは使わない。ファイル名は `xlator-log.{format}` とする。
+Generate files in the browser from the current aligned records. Do not use server-side persistence or an export API. Use the filename `xlator-log.{format}`.
 
-- TXT: 日本語ログと英語ログを見出し付きで出力
-- CSV: 番号、時刻、元言語、日本語、英語を出力
-- JSON: `Utterance[]` を出力
-- SRT: ライブデータではRealtimeイベントの `elapsed_ms` に基づく `startMs` / `endMs` を使い、両言語を1字幕へ出力する。`endMs` は最後に採用した入力文字起こしデルタの時刻であり、実音声の厳密な終端ではない。初期データは4秒間隔の仮時刻を使う
+- TXT: Export the Japanese and English logs under separate headings.
+- CSV: Export sequence number, time, source language, Japanese, and English.
+- JSON: Export `Utterance[]`.
+- SRT: For live data, use `startMs` / `endMs` derived from Realtime event `elapsed_ms` values and include both languages in one subtitle. `endMs` is the timestamp of the most recently selected input-transcript delta, not the exact end of the physical speech. For initial sample data, use synthetic timestamps at four-second intervals.
 
-## 11. レイテンシ方針
+## 11. Latency strategy
 
-- ブラウザ音声はWebRTCで直接ストリーミングする
-- APIキー設定確認後に2つの短期クライアントシークレットを先読みする
-- 2つのセッションを並列作成する
-- 各セッションではクライアントシークレット取得とWebRTC offer生成を並列に進める
-- 文字起こし・翻訳デルタは到着ごとに即時反映する
-- 文末を検出できた発話は320ms、それ以外も450msの無音で確定し、遅着デルタで無音時計を巻き戻さない
-- 遅れている原文候補による重複再描画は行わない
-- 発話の時刻検索は直近行から行い、変更のないログ行は再描画しない
-- 自動スクロールのアニメーションは使わない
-- モデル処理とネットワーク遅延はクライアントだけでは除去できない
-- 評価時は、接続開始、初回原文、初回翻訳、発話確定を別々に計測する
+- Stream browser audio directly over WebRTC.
+- Prefetch two short-lived client secrets after confirming the API key configuration.
+- Create both sessions in parallel.
+- Fetch the client secret and create the WebRTC offer in parallel within each session.
+- Render transcript and translation deltas immediately as they arrive.
+- Finalize utterances after 320 ms of silence when terminal punctuation is present, or 450 ms otherwise, without letting late deltas rewind the silence timer.
+- Avoid duplicate rendering from a lagging source candidate.
+- Search for utterance timestamps from the newest row backward, and do not rerender unchanged rows.
+- Do not animate automatic scrolling.
+- Client logic cannot eliminate model processing or network latency.
+- Measure connection startup, first source transcript, first translation, and utterance finalization separately during evaluation.
 
-## 12. テストと品質評価
+## 12. Testing and quality evaluation
 
-通常のCIでは`npm run verify`を実行し、lint、型チェック、production build、実APIを使わない挙動テストを必須とする。
+Normal CI runs `npm run verify` and requires linting, type checking, a production build, and behavioral tests that do not call the live API.
 
-実音声と実APIの確認には`npm run test:smoke:api`を使う。ランナーは非圧縮16-bit PCM WAVを読み、チャンネルをモノラルへ統合して24kHz PCM16へ変換し、Realtime TranslationのWebSocketへ100ms単位で実時間送信する。
+Use `npm run test:smoke:api` for real-audio and live-API verification. The runner reads uncompressed 16-bit PCM WAV files, downmixes their channels, converts them to 24 kHz PCM16, and sends them to Realtime Translation over WebSocket in real time in 100 ms chunks.
 
-- `session.input_transcript.delta`を正解書き起こしと比較する
-- 日本語と日英混在はCER、英語はWERを使う
-- `session.output_transcript.delta`は代表訳との誤り率と必須語句カバー率を確認する
-- 翻訳音声デルタが空でないことを確認する
-- 音声末尾で`session.close`を送り、`session.closed`まで待つ
-- 初回原文、初回翻訳、初回翻訳音声、セッション終了のレイテンシを出力する
+- Compare `session.input_transcript.delta` with the reference transcript.
+- Use CER for Japanese and Japanese/English mixed input, and WER for English.
+- Evaluate `session.output_transcript.delta` using both its error rate against a representative translation and required-term coverage.
+- Confirm that translated-audio deltas are not empty.
+- Send `session.close` at the end of the audio and wait for `session.closed`.
+- Report latency to the first source transcript, first translation, first translated audio, and session closure.
 
-API費用、モデル出力の揺らぎ、外部障害から通常PRの必須チェックにはせず、GitHub Actionsの手動`Realtime API Smoke` workflowで実行する。APIキーはActions Secretの`OPENAI_API_KEY`からだけ渡す。
+Because of API cost, model variability, and external outages, the live-API smoke test is not a required normal pull request check. Run it through the manual `Realtime API Smoke` GitHub Actions workflow. Pass the API key only through the `OPENAI_API_KEY` Actions secret.
 
-物理マイクはCIでは再現せず、マイク権限、WebRTC接続、日英交互発話、翻訳音声、停止をリリース前にブラウザで手動確認する。詳細手順とfixture形式は`docs/realtime-smoke.md`を正とする。
+CI does not reproduce a physical microphone. Before a release, manually verify browser microphone permission, WebRTC connection, alternating Japanese/English utterances, translated audio, and stopping. `docs/realtime-smoke.md` is authoritative for the detailed procedure and fixture format.
 
-### 現在の実装・検証状況
+### Current implementation and verification status
 
-| 対象 | 実装状況 | 検証状況 | 現在の扱い |
+| Area | Implementation | Verification | Current treatment |
 | --- | --- | --- | --- |
-| ブラウザのRealtime接続MVP | 実装済み | production buildと接続・イベント処理の自動テストに成功 | 実マイクと実APIを組み合わせた確認は未実施 |
-| 通常CI | `npm run verify`を実行するGitHub Actionsを実装済み | 現在の変更ブランチでlint、型チェック、build、26テストに成功 | PRの必須品質ゲートとして使用する |
-| 実APIスモークCLI | WAV変換、WebSocket送信、CER/WER、翻訳語句、翻訳音声、レイテンシ、正常終了判定を実装済み | APIを呼ばない`--validate-only`をCLI入口まで自動テスト済み | 実API呼び出しは未実施 |
-| 実音声fixture | manifest例と入力検証を実装済み | 合成テスト用WAVで変換処理を自動テスト済み | 実発話WAV、正解書き起こし、正解翻訳は未登録 |
-| 手動GitHub Actions | `workflow_dispatch`の`Realtime API Smoke`を実装済み | workflowファイル追加後も通常CIに成功。実API呼び出しは未実施 | 実行に必要なfixture、APIキー登録、default branchへの反映が未完了 |
-| 物理マイク確認 | 手動手順を`docs/realtime-smoke.md`へ定義済み | 未実施 | 自動CIではなくリリース前手動確認とする |
+| Browser Realtime connection MVP | Implemented | Production build and automated connection/event-processing tests pass | Combined physical-microphone and live-API verification has not been performed |
+| Normal CI | GitHub Actions runs `npm run verify` | Lint, type checking, build, and 26 tests pass on the current change branch | Required pull request quality gate |
+| Live-API smoke CLI | WAV conversion, WebSocket streaming, CER/WER, translation terms, translated audio, latency, and clean closure checks are implemented | The API-free `--validate-only` path passes through the CLI entry point in automated tests | Live API has not been called |
+| Real-audio fixture | Manifest example and input validation are implemented | Conversion passes automated tests with a synthetic WAV | Real speech WAV files, reference transcripts, and reference translations are not registered |
+| Manual GitHub Actions workflow | The `workflow_dispatch` `Realtime API Smoke` workflow is implemented | Normal CI passes after adding the workflow; live API has not been called | Required fixture, API key registration, and execution from the default branch remain incomplete |
+| Physical microphone verification | Manual procedure is defined in `docs/realtime-smoke.md` | Not performed | Manual pre-release check, not automated CI |
 
-### 残課題と完了条件
+### Remaining work and completion conditions
 
-1. 実発話WAVと正解データを登録する
-   - 最低限、日本語から英語、英語から日本語を含める
-   - 日英が発話ごとに切り替わるケース、数字・日時・固有名詞を含める
-   - `tests/fixtures/realtime/manifest.json`と参照WAVを追加し、`--validate-only`を成功させる
-2. GitHub Actionsの実API実行条件を整える
-   - Actions Secretまたは保護Environmentへ`OPENAI_API_KEY`を登録する
-   - workflowがdefault branchへ反映された後に`Realtime API Smoke`を手動実行する
-   - 入力文字起こし、翻訳、翻訳音声、`session.closed`がすべて成功した結果を残す
-3. 物理マイクでブラウザMVPを確認する
-   - `docs/realtime-smoke.md`の5手順を実行する
-   - 接続、日英交互発話、行対応、翻訳音声、接続中・接続後停止を確認する
-4. 初回の実測結果から閾値を調整する
-   - 現在の原文0.35、翻訳0.65を初期値とし、正常ケースの揺らぎと見逃したくない誤りを確認して固定する
+1. Register real-speech WAV files and reference data.
+   - Include at least Japanese-to-English and English-to-Japanese cases.
+   - Include utterance-by-utterance language switching, numbers, dates, times, and proper nouns.
+   - Add `tests/fixtures/realtime/manifest.json` and its referenced WAV files, then make `--validate-only` pass.
+2. Prepare the GitHub Actions environment for live-API execution.
+   - Add `OPENAI_API_KEY` as an Actions secret or in a protected environment.
+   - After the workflow exists on the default branch, run `Realtime API Smoke` manually.
+   - Preserve a successful result for input transcription, translation, translated audio, and `session.closed`.
+3. Verify the browser MVP with a physical microphone.
+   - Complete the five steps in `docs/realtime-smoke.md`.
+   - Verify connection, alternating Japanese/English speech, row alignment, translated audio, and stopping both during and after connection.
+4. Tune thresholds using the first measured results.
+   - Start with 0.35 for the source transcript and 0.65 for translation. Confirm normal-case variability and important errors that must not be missed before fixing the thresholds.
 
-上記1〜3が成功するまでは、実APIスモークと実マイク確認を「実装済み」ではなく「基盤・手順実装済み、実地検証待ち」と表記する。
+Until items 1 through 3 succeed, describe the live-API smoke test and physical-microphone verification as "infrastructure and procedures implemented; field verification pending," not simply "implemented."
 
-## 13. 現在の非対応範囲
+## 13. Currently unsupported
 
-- 話者分離、話者ラベル
-- 重なり発話の分離
-- 音声録音と再処理
-- SQLiteなどへの永続保存
-- セッション履歴
-- ログの手修正
-- 固有名詞辞書
-- 接続の自動再試行
-- 専用VADによる高精度な発話境界
-- 物理マイクを使う自動E2Eテスト
+- Speaker diarization and speaker labels.
+- Separation of overlapping speech.
+- Audio recording and reprocessing.
+- Persistent storage such as SQLite.
+- Session history.
+- Manual transcript editing.
+- Proper-noun dictionaries.
+- Automatic connection retry.
+- High-accuracy utterance boundaries using a dedicated VAD model.
+- Automated end-to-end tests using a physical microphone.
 
-## 14. 将来候補
+## 14. Future candidates
 
-1. 実発話WAVを使う日英コードスイッチングgolden setの拡充
-2. 発話境界と2セッション間アラインメントの改善
-3. 録音保存とセッション履歴
-4. 後処理による話者分離（`A` / `B`）
-5. 誤認識・誤訳の手修正
-6. 固有名詞辞書
+1. Expand the Japanese/English code-switching golden set with real-speech WAV files.
+2. Improve utterance boundaries and alignment between the two sessions.
+3. Add recording persistence and session history.
+4. Add post-processing speaker diarization (`A` / `B`).
+5. Add manual correction of recognition and translation errors.
+6. Add a proper-noun dictionary.
 
-## 15. 主要ファイル
+## 15. Key files
 
 ```text
-AGENTS.md                               Codex向け作業規約
-docs/spec.md                            本仕様書
-app/page.tsx                            画面構成のみ
-app/components/conversation-controls.tsx 会話操作、翻訳音声選択、ダウンロードUI
-app/components/session-error-toast.tsx  接続エラー表示
-app/components/site-header.tsx          ヘッダー
-app/components/transcript-panel.tsx     日英ログパネル
-app/components/ui-icons.tsx             UIアイコンと波形
-app/hooks/use-conversation-session.ts   Realtime接続、発話状態、翻訳音声制御
-app/hooks/use-local-vad.ts               Web Audio APIによるローカルVAD
-app/globals.css                         レイアウトとスタイル
-app/api/realtime/session/route.ts       短期シークレット発行
-lib/demo-utterances.ts                  初期画面fixture
-lib/download-log.ts                     TXT / CSV / JSON / SRT生成
-lib/local-vad.ts                        VAD無音時間の純粋ロジック
-lib/realtime-translation.ts             WebRTC接続
-lib/translation-types.ts                共有データ型
-lib/utterance-alignment.ts              言語判定と発話対応付け
-lib/realtime-smoke.ts                   WAV変換、Realtime WebSocket、精度評価
-scripts/realtime-smoke.ts               実APIスモークテストCLI
-tests/fixtures/realtime/                実音声manifestとgolden set
-.github/workflows/realtime-smoke.yml     手動の実APIスモークテスト
-docs/realtime-smoke.md                  fixture・実行・実マイク確認手順
-worker/index.ts                         Vinext Workerエントリ
-.env.example                            環境変数例
+AGENTS.md                                Codex working rules
+docs/spec.md                             This specification
+app/page.tsx                             Screen composition only
+app/components/conversation-controls.tsx Conversation controls, translated-audio selection, and download UI
+app/components/session-error-toast.tsx   Connection error display
+app/components/site-header.tsx           Header
+app/components/transcript-panel.tsx      Japanese and English transcript panels
+app/components/ui-icons.tsx              UI icons and waveform
+app/hooks/use-conversation-session.ts    Realtime connections, utterance state, and translated-audio control
+app/hooks/use-local-vad.ts               Local VAD using the Web Audio API
+app/globals.css                          Layout and styles
+app/api/realtime/session/route.ts        Short-lived secret issuance
+lib/demo-utterances.ts                   Initial-screen fixture
+lib/download-log.ts                      TXT / CSV / JSON / SRT generation
+lib/local-vad.ts                         Pure VAD silence-duration logic
+lib/realtime-translation.ts              WebRTC connection
+lib/translation-types.ts                 Shared data types
+lib/utterance-alignment.ts               Language detection and utterance alignment
+lib/realtime-smoke.ts                    WAV conversion, Realtime WebSocket, and accuracy evaluation
+scripts/realtime-smoke.ts                Live-API smoke-test CLI
+tests/fixtures/realtime/                 Real-audio manifest and golden set
+.github/workflows/realtime-smoke.yml     Manual live-API smoke test
+docs/realtime-smoke.md                   Fixture, execution, and physical-microphone procedures
+worker/index.ts                          Vinext Worker entry point
+.env.example                             Environment variable example
 ```
 
-DB、認証、サンプルAPIなど、現行MVPで使わない雛形コードは置かない。
+Do not keep scaffold code for databases, authentication, sample APIs, or other features unused by the current MVP.
 
-## 16. 受け入れ確認
+## 16. Acceptance checks
 
-- 初期画面で左右の最新ログが表示される
-- デスクトップで左右余白が最小限になっている
-- 16発話の初期データで両パネルが最終行へ自動追従する
-- 会話開始でマイク許可後に2つのRealtimeセッションが接続される
-- 短期クライアントシークレットは失効前なら接続開始時に再利用される
-- 日本語・英語を交互に話しても同じ番号の両言語ログへそろう
-- 発話後の無音をローカルVADが検出すると、文末ありは約320ms、それ以外は約450msで行が確定する
-- 片方の入力文字起こしが止まっても、もう片方の候補へ追従する
-- 翻訳音声は元言語と反対側だけ再生される
-- TXT / CSV / JSON / SRTをダウンロードできる
-- 実音声fixtureはAPI接続なしで形式とWAV変換を検証できる
-- 手動workflowから実APIスモークテストを実行できる
-- APIキーがブラウザHTML、JavaScript、ダウンロードへ含まれない
-- ヘッダーのGitHubアイコンから本リポジトリを新しいタブで開ける
-- `npm run verify` が成功する
+- The latest rows in both columns are visible on the initial screen.
+- Desktop horizontal margins are minimal.
+- Both panels automatically follow the final row in the 16-utterance sample data.
+- Starting a conversation connects two Realtime sessions after microphone permission is granted.
+- A prefetched short-lived client secret is reused at connection start if it has not expired.
+- Alternating Japanese and English speech produces both languages under the same sequence number.
+- When local VAD detects silence after speech, rows finalize after approximately 320 ms with terminal punctuation or 450 ms otherwise.
+- If one input transcript stops, the app follows the other session's candidate.
+- Translated audio plays only in the language opposite the source language.
+- TXT, CSV, JSON, and SRT files can be downloaded.
+- Real-audio fixtures can be validated for structure and WAV conversion without an API connection.
+- The live-API smoke test can be started from the manual workflow.
+- The API key does not appear in browser HTML, JavaScript, or downloads.
+- The GitHub icon in the header opens this repository in a new tab.
+- `npm run verify` passes.
