@@ -2,13 +2,13 @@
 
 [![CI](https://github.com/shinichi-takayanagi/xlator/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/shinichi-takayanagi/xlator/actions/workflows/ci.yml)
 
-共有マイクへ入力された日本語・英語の会話を、発話ごとに両言語へそろえて表示するローカルWebアプリです。音声認識と翻訳にはOpenAI Realtime APIへのインターネット接続が必要です。
+A local web app that captures Japanese and English conversations from a shared microphone and displays each utterance in both languages. Speech recognition and translation require an internet connection to the OpenAI Realtime API.
 
 ![xlator interface](docs/images/xlator-current.jpg)
 
-## セットアップ
+## Setup
 
-必要なNode.jsバージョンは[.nvmrc](.nvmrc)に記載しています。nvmを使う場合は最初に`nvm use`を実行してください。
+The required Node.js version is specified in [.nvmrc](.nvmrc). If you use nvm, run `nvm use` first.
 
 ```bash
 npm ci
@@ -16,15 +16,15 @@ cp .env.example .env.local
 npm run dev
 ```
 
-`.env.local`の`OPENAI_API_KEY`へサーバー用APIキーを設定し、ブラウザで[http://localhost:3000](http://localhost:3000)を開きます。APIキーを`NEXT_PUBLIC_*`へ設定しないでください。
+Set the server API key as `OPENAI_API_KEY` in `.env.local`, then open [http://localhost:3000](http://localhost:3000) in your browser. Do not expose the API key through a `NEXT_PUBLIC_*` variable.
 
-## 開発コマンド
+## Development commands
 
 ```bash
-npm run dev        # ローカル開発
-npm run verify     # lint、型チェック、build、test
-npm run start      # production buildの起動
-npm run test:smoke:api -- --fixture <manifest.json> # 実音声＋実API（手動）
+npm run dev        # Start the local development server
+npm run verify     # Run lint, type checking, build, and tests
+npm run start      # Start the production build
+npm run test:smoke:api -- --fixture <manifest.json> # Real audio and API smoke test (manual)
 ```
 
-実音声のfixture形式、ローカル実行、GitHub Actions、実マイク確認は[docs/realtime-smoke.md](docs/realtime-smoke.md)を参照してください。現在の動作、アーキテクチャ、非対応範囲は[docs/spec.md](docs/spec.md)に記載しています。
+See [docs/realtime-smoke.md](docs/realtime-smoke.md) for the real-audio fixture format, local execution instructions, GitHub Actions workflow, and physical microphone checks. See [docs/spec.md](docs/spec.md) for current behavior, architecture, and unsupported features.

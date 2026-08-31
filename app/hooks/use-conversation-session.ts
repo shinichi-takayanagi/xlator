@@ -234,17 +234,6 @@ export function useConversationSession() {
     });
   };
 
-  const handleTranslationEvent = (targetLanguage: TargetLanguage, event: TranslationEvent) => {
-    if (event.type === "session.input_transcript.delta") {
-      handleSourceDelta(targetLanguage, event);
-    } else if (event.type === "session.output_transcript.delta") {
-      handleOutputDelta(targetLanguage, event);
-    } else if (event.type === "error") {
-      setErrorMessage(event.error?.message ?? "Realtime処理中にエラーが発生しました。");
-      setConnectionStatus("error");
-    }
-  };
-
   const closeRealtimeResources = useCallback(() => {
     startAbortControllerRef.current?.abort();
     startAbortControllerRef.current = null;
@@ -257,6 +246,19 @@ export function useConversationSession() {
     if (finalizeTimerRef.current) window.clearTimeout(finalizeTimerRef.current);
     finalizeTimerRef.current = null;
   }, [stopLocalVad]);
+
+  const handleTranslationEvent = (targetLanguage: TargetLanguage, event: TranslationEvent) => {
+    if (event.type === "session.input_transcript.delta") {
+      handleSourceDelta(targetLanguage, event);
+    } else if (event.type === "session.output_transcript.delta") {
+      handleOutputDelta(targetLanguage, event);
+    } else if (event.type === "error") {
+      closeRealtimeResources();
+      setErrorMessage(event.error?.message ?? "Realtime処理中にエラーが発生しました。");
+      setConnectionStatus("error");
+      setIsListening(false);
+    }
+  };
 
   useEffect(() => () => closeRealtimeResources(), [closeRealtimeResources]);
 

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  createConnectionAbortScope,
   waitForPeerConnection,
   withAbort,
 } from "../lib/realtime-translation.ts";
@@ -34,4 +35,39 @@ test("makes a shared pending operation cancelable for one caller", async () => {
   const pending = withAbort(new Promise(() => {}), controller.signal);
   controller.abort();
   await assert.rejects(pending, { name: "AbortError" });
+});
+
+test("bounds the complete connection startup with one deadline", async () => {
+  const scope = createConnectionAbortScope(undefined, 10);
+  try {
+    await assert.rejects(
+      withAbort(new Promise(() => {}), scope.signal),
+      /Realtime接続がタイムアウトしました。/,
+    );
+  } finally {
+    scope.dispose();
+  }
+});
+
+test("propagates caller cancellation through the connection scope", async () => {
+  const controller = new AbortController();
+  const scope = createConnectionAbortScope(controller.signal, 1_000);
+  const pending = withAbort(new Promise(() => {}), scope.signal);
+  controller.abort();
+  try {
+    await assert.rejects(pending, { name: "AbortError" });
+  } finally {
+    scope.dispose();
+  }
+});
+
+test("clears the startup deadline after the connection is established", async () => {
+  const scope = createConnectionAbortScope(undefined, 5);
+  scope.clearDeadline();
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    assert.equal(scope.signal.aborted, false);
+  } finally {
+    scope.dispose();
+  }
 });
