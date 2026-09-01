@@ -8,13 +8,17 @@ const VAD_NOISE_MULTIPLIER = 2.5;
 
 type UseLocalVadOptions = {
   getActiveSourceText: () => string;
-  onSpeechStart: () => void;
-  onSpeechEnd: () => void;
+  onSpeechStart: (at: number) => void;
+  onSilenceStart: (at: number) => void;
+  onSilenceCancel: () => void;
+  onSpeechEnd: (at: number) => void;
 };
 
 export function useLocalVad({
   getActiveSourceText,
   onSpeechStart,
+  onSilenceStart,
+  onSilenceCancel,
   onSpeechEnd,
 }: UseLocalVadOptions) {
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -22,11 +26,23 @@ export function useLocalVad({
   const speechDetectedRef = useRef(false);
   const silenceStartedAtRef = useRef<number | null>(null);
   const noiseFloorRef = useRef(0.01);
-  const callbacksRef = useRef({ getActiveSourceText, onSpeechStart, onSpeechEnd });
+  const callbacksRef = useRef({
+    getActiveSourceText,
+    onSpeechStart,
+    onSilenceStart,
+    onSilenceCancel,
+    onSpeechEnd,
+  });
 
   useEffect(() => {
-    callbacksRef.current = { getActiveSourceText, onSpeechStart, onSpeechEnd };
-  }, [getActiveSourceText, onSpeechEnd, onSpeechStart]);
+    callbacksRef.current = {
+      getActiveSourceText,
+      onSpeechStart,
+      onSilenceStart,
+      onSilenceCancel,
+      onSpeechEnd,
+    };
+  }, [getActiveSourceText, onSilenceCancel, onSilenceStart, onSpeechEnd, onSpeechStart]);
 
   const stopLocalVad = useCallback(() => {
     if (animationFrameRef.current !== null) {
@@ -70,19 +86,24 @@ export function useLocalVad({
 
       if (rms >= speechThreshold) {
         if (!speechDetectedRef.current) {
-          callbacksRef.current.onSpeechStart();
+          callbacksRef.current.onSpeechStart(now);
+        } else if (silenceStartedAtRef.current !== null) {
+          callbacksRef.current.onSilenceCancel();
         }
         speechDetectedRef.current = true;
         silenceStartedAtRef.current = null;
       } else {
         noiseFloorRef.current += (rms - noiseFloorRef.current) * 0.05;
         if (speechDetectedRef.current) {
-          silenceStartedAtRef.current ??= now;
+          if (silenceStartedAtRef.current === null) {
+            silenceStartedAtRef.current = now;
+            callbacksRef.current.onSilenceStart(now);
+          }
           const silenceDurationMs = getVadSilenceDurationMs(
             callbacksRef.current.getActiveSourceText(),
           );
           if (now - silenceStartedAtRef.current >= silenceDurationMs) {
-            callbacksRef.current.onSpeechEnd();
+            callbacksRef.current.onSpeechEnd(now);
             speechDetectedRef.current = false;
             silenceStartedAtRef.current = null;
           }

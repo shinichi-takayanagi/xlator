@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "ja-to-en",
+      "audio": "ja-to-en.wav",
+      "sourceLanguage": "ja",
+      "targetLanguage": "en",
+      "expectedSource": "こんにちは。今日は良い天気ですね",
+      "expectedTranslation": "Hello. The weather is nice today.",
+      "requiredTranslationTerms": [
+        ["hello", "hi"],
+        ["nice weather", "weather is nice", "fine today"]
+      ]
+    },
+    {
+      "id": "en-to-ja",
+      "audio": "en-to-ja.wav",
+      "sourceLanguage": "en",
+      "targetLanguage": "ja",
+      "expectedSource": "Good Morning. It's fine today",
+      "expectedTranslation": "おはようございます。今日は良い天気です。",
+      "requiredTranslationTerms": [
+        ["おはようございます", "おはよう"],
+        ["良い天気", "いい天気"]
+      ]
+    }
+  ]
+}

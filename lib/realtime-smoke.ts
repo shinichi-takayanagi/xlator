@@ -62,6 +62,30 @@ export type RealtimeSmokeEvaluation = {
   };
 };
 
+export type LatencyPercentiles = {
+  sampleCount: number;
+  p50: number | null;
+  p95: number | null;
+};
+
+export function summarizeLatencyValues(
+  values: Array<number | null>,
+): LatencyPercentiles {
+  const sorted = values
+    .filter((value): value is number => value !== null)
+    .sort((left, right) => left - right);
+  const percentile = (ratio: number) => {
+    if (sorted.length === 0) return null;
+    return sorted[Math.max(0, Math.ceil(sorted.length * ratio) - 1)];
+  };
+
+  return {
+    sampleCount: sorted.length,
+    p50: percentile(0.5),
+    p95: percentile(0.95),
+  };
+}
+
 function requireNonEmptyString(value: unknown, field: string): asserts value is string {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new Error(`${field} must be a non-empty string.`);
