@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   evaluateRealtimeSmoke,
   prepareWavPcm16,
+  summarizeLatencyValues,
   transcriptErrorRate,
   translationTermCoverage,
   validateRealtimeSmokeManifest,
@@ -68,6 +69,15 @@ test("accepts alternative required translation terms", () => {
   assert.equal(
     translationTermCoverage("The next meeting is at 3 p.m.", ["meeting", ["3 p.m.", "three"]]),
     1,
+  );
+});
+
+test("summarizes latency values with nearest-rank p50 and p95", () => {
+  const summary = summarizeLatencyValues([10, 20, null, 30, 40, 50, 60, 70, 80, 90, 100]);
+  assert.deepEqual(summary, { sampleCount: 10, p50: 50, p95: 100 });
+  assert.deepEqual(
+    summarizeLatencyValues([null]),
+    { sampleCount: 0, p50: null, p95: null },
   );
 });
 

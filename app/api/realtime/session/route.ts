@@ -2,7 +2,6 @@ import type { TargetLanguage } from "@/lib/translation-types";
 
 const OPENAI_CLIENT_SECRET_URL =
   "https://api.openai.com/v1/realtime/translations/client_secrets";
-const DEFAULT_TRANSCRIPTION_MODEL = "gpt-live-transcribe";
 
 function isTargetLanguage(value: unknown): value is TargetLanguage {
   return value === "ja" || value === "en";
@@ -13,8 +12,6 @@ export async function GET() {
 
 export async function POST(request: Request) {
   const apiKey = process.env.OPENAI_API_KEY;
-  const transcriptionModel =
-    process.env.OPENAI_TRANSCRIPTION_MODEL?.trim() || DEFAULT_TRANSCRIPTION_MODEL;
 
   if (!apiKey) {
     return Response.json(
@@ -56,7 +53,6 @@ export async function POST(request: Request) {
         model: "gpt-realtime-translate",
         audio: {
           input: {
-            transcription: { model: transcriptionModel },
             noise_reduction: { type: "far_field" },
           },
           output: { language: body.targetLanguage },

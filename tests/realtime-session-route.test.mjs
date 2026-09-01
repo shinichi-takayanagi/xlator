@@ -4,14 +4,11 @@ import test from "node:test";
 import { GET, POST } from "../app/api/realtime/session/route.ts";
 
 const originalApiKey = process.env.OPENAI_API_KEY;
-const originalTranscriptionModel = process.env.OPENAI_TRANSCRIPTION_MODEL;
 const originalFetch = globalThis.fetch;
 
 test.afterEach(() => {
   if (originalApiKey === undefined) delete process.env.OPENAI_API_KEY;
   else process.env.OPENAI_API_KEY = originalApiKey;
-  if (originalTranscriptionModel === undefined) delete process.env.OPENAI_TRANSCRIPTION_MODEL;
-  else process.env.OPENAI_TRANSCRIPTION_MODEL = originalTranscriptionModel;
   globalThis.fetch = originalFetch;
 });
 
@@ -41,9 +38,8 @@ test("validates the target language", async () => {
   assert.equal(response.status, 400);
 });
 
-test("creates a ten-minute translation secret with the configured model", async () => {
+test("creates a ten-minute translated-audio secret without duplicate transcription", async () => {
   process.env.OPENAI_API_KEY = "server-only-test-key";
-  process.env.OPENAI_TRANSCRIPTION_MODEL = "custom-transcriber";
   let upstreamRequest;
   globalThis.fetch = async (url, init) => {
     upstreamRequest = { url, init };
@@ -63,7 +59,7 @@ test("creates a ten-minute translation secret with the configured model", async 
   const body = JSON.parse(upstreamRequest.init.body);
   assert.deepEqual(body.expires_after, { anchor: "created_at", seconds: 600 });
   assert.equal(body.session.model, "gpt-realtime-translate");
-  assert.equal(body.session.audio.input.transcription.model, "custom-transcriber");
+  assert.equal(body.session.audio.input.transcription, undefined);
   assert.equal(body.session.audio.input.noise_reduction.type, "far_field");
   assert.equal(body.session.audio.output.language, "ja");
 });
@@ -72,5 +68,7 @@ test("keeps example environment values free of secrets", async () => {
   const exampleEnv = await readFile(new URL("../.env.example", import.meta.url), "utf8");
   assert.match(exampleEnv, /^OPENAI_API_KEY=$/m);
   assert.match(exampleEnv, /^OPENAI_TRANSCRIPTION_MODEL=gpt-live-transcribe$/m);
+  assert.match(exampleEnv, /^OPENAI_TRANSCRIPTION_DELAY=minimal$/m);
+  assert.match(exampleEnv, /^OPENAI_TEXT_TRANSLATION_MODEL=gpt-5\.6-luna$/m);
   assert.doesNotMatch(exampleEnv, /sk-[A-Za-z0-9]{20,}/);
 });

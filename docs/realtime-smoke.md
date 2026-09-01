@@ -1,6 +1,6 @@
 # Realtime API Smoke Test
 
-This manual test streams real audio files to the OpenAI Realtime Translation API in real time and verifies the input transcript, translated transcript, translated audio, and clean session closure. It is excluded from normal pull request CI and must be started explicitly through the `Realtime API Smoke` GitHub Actions workflow.
+This legacy-path manual test streams real audio files directly to the OpenAI Realtime Translation API and verifies the input transcript, translated transcript, translated audio, and clean session closure. It is excluded from normal pull request CI and must be started explicitly through the `Realtime API Smoke` GitHub Actions workflow. It does not exercise the browser's newer `gpt-live-transcribe` plus Responses text-translation path.
 
 ## Evaluation data
 
@@ -29,7 +29,20 @@ OPENAI_API_KEY=... npm run test:smoke:api -- \
 
 Add `--case ja-to-en` to run one case. Add `--validate-only` to validate the manifest and WAV conversion without connecting to the API.
 
+Add `--repeat 10` to run every selected case ten times. The runner prints nearest-rank p50 and p95 values for the first source delta, first translation delta, and `translation - source`, then identifies the model on the median critical path.
+
 The runner streams each WAV file in real time in 100 ms chunks. At the end of the audio, it sends `session.close` and waits for `session.closed`. The output includes the source transcript, translation, individual evaluation results, and latency to the first source transcript, first translation, first translated audio, and session closure.
+
+## Latest local benchmark
+
+The basic fixtures were run ten times per direction on 2026-09-01. All 20 runs returned source text, translation text, translated audio, and `session.closed`.
+
+| Direction | Source p50/p95 | Translation p50/p95 | Translation minus source p50/p95 | Median critical path |
+| --- | --- | --- | --- | --- |
+| Japanese to English | 3,904/4,920 ms | 4,199/10,364 ms | 294/6,207 ms | `gpt-realtime-translate` |
+| English to Japanese | 2,973/3,146 ms | 2,619/3,852 ms | -329/910 ms | `gpt-live-transcribe` |
+
+The command exited nonzero because the current representative translations and required-term lists do not cover all valid paraphrases. Human-confirm the Japanese source reference, especially whether `とても` is present in the audio, before changing thresholds or model settings.
 
 ## GitHub Actions
 
@@ -45,8 +58,9 @@ A physical microphone cannot be reproduced reliably in CI. Complete the followin
 
 1. Add the API key to `.env.local` and start the app with `npm run dev`.
 2. Allow microphone access in the browser and speak at least three utterances, alternating between Japanese and English.
-3. Confirm that both Realtime sessions reach `リスニング中` (Listening), and that each source utterance and translation appear under the same row number.
-4. Set translated audio to `自動` (Auto) and confirm that only the language opposite the source language is played.
+3. Keep translated audio at `再生しない`, start the conversation, and confirm that the transcription session reaches `リスニング中`, an empty aligned row appears when speech begins, and source plus Responses translation text stream under the same row number. Confirm through browser network diagnostics that no `/api/realtime/session` POST or `/v1/realtime/translations/calls` connection occurs in this mode.
+4. Stop, set translated audio to `自動` (Auto), and start again. Confirm that the transcription session plus both translated-audio sessions connect and that only the language opposite the source language is played. Also switch back to `再生しない` and on again during the live session to verify disconnection and reconnection.
 5. Confirm that the session can be stopped both while connecting and after connecting, and that live transcript rows remain visible afterward.
+6. Open the browser developer console and inspect `window.__xlatorLatency`. Confirm that each completed utterance records `speech-to-source-display`, `speech-to-translation-display`, and `silence-to-row-final` where local VAD detected the boundaries. Compare these measurements with the legacy benchmark only after collecting repeated representative microphone runs.
 
 This is a separate manual smoke test covering microphone permission, WebRTC, and browser audio playback. It is not part of the file-based Realtime API accuracy evaluation.
