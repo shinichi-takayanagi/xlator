@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  alignSourceAndTranslation,
+  appendTranslationCandidate,
   createLiveUtterance,
   detectLanguage,
+  findLastRowStartingAtOrBefore,
   replaceRow,
 } from "../lib/utterance-alignment.ts";
 
@@ -27,11 +30,31 @@ test("detects Japanese and English source text", () => {
   assert.equal(detectLanguage("123!?"), "unknown");
 });
 
-test("immutably replaces an aligned utterance", () => {
+test("buffers both Translation targets and renders only the opposite language", () => {
+  let candidates = appendTranslationCandidate({}, "en", "Good ");
+  candidates = appendTranslationCandidate(candidates, "en", "morning.");
+  candidates = appendTranslationCandidate(candidates, "ja", "おはようございます。");
+
+  const row = createLiveUtterance(1, 0, "live-test-1");
+  assert.deepEqual(
+    alignSourceAndTranslation(row, "おはようございます。", "ja", candidates),
+    { ja: "おはようございます。", en: "Good morning." },
+  );
+  assert.deepEqual(
+    alignSourceAndTranslation(row, "Good morning.", "en", candidates),
+    { ja: "おはようございます。", en: "Good morning." },
+  );
+});
+
+test("locates and immutably replaces an aligned utterance", () => {
   const rows = [
     { id: "1", sequence: 1, at: "00:01", sourceLanguage: "ja", startMs: 1000, ja: "一", en: "one" },
     { id: "2", sequence: 2, at: "00:03", sourceLanguage: "en", startMs: 3000, ja: "二", en: "two" },
   ];
+
+  assert.equal(findLastRowStartingAtOrBefore(rows, 999), -1);
+  assert.equal(findLastRowStartingAtOrBefore(rows, 2999), 0);
+  assert.equal(findLastRowStartingAtOrBefore(rows, 3400), 1);
 
   const replacement = { ...rows[1], en: "Two" };
   const next = replaceRow(rows, 1, replacement);

@@ -1,7 +1,7 @@
 # xlator Specification
 
-Last updated: 2026-09-01
-Status: Text-first Realtime connection MVP implemented; legacy translation-path benchmark completed; new browser path and physical-microphone verification pending
+Last updated: 2026-09-02
+Status: Dual Realtime transcription-and-translation path implemented; automated verification completed; physical-microphone verification pending
 
 ## 1. Purpose
 
@@ -13,8 +13,8 @@ Build a local web app that captures a conversation containing both Japanese and 
 
 - Use TypeScript for both browser and server code. It is a better fit than Python for this MVP because WebRTC, React, event-driven APIs, and shared data types can all use one language.
 - Use `gpt-live-transcribe` for the always-on browser speech-to-text path.
-- Stream Japanese/English text translation through the Responses API, using `gpt-5.6-luna` by default.
-- Use `gpt-realtime-translate` only when translated-audio playback is enabled.
+- Use `gpt-realtime-translate` for streaming translated text and translated audio.
+- Keep both Japanese-target and English-target Translation sessions connected so the source language can alternate on every utterance.
 - Use one shared microphone as input.
 - Allow speakers to switch freely between Japanese and English on every utterance.
 - Store each utterance as one aligned record rather than treating the Japanese and English logs as separate conversations.
@@ -92,13 +92,13 @@ Yep, I'm fine
 - `待機中` (Idle): Before starting or after stopping.
 - `APIキー未設定` (API key not configured): `OPENAI_API_KEY` was not found during the startup configuration check.
 - `接続中` (Connecting): The microphone is available and the Realtime sessions are being established.
-- `リスニング中` (Listening): The transcription session is connected. If translated audio was enabled before startup, both target-language audio sessions are connected too.
+- `リスニング中` (Listening): The transcription session and both target-language Translation sessions are connected.
 - `接続エラー` (Connection error): API configuration, microphone access, WebRTC, or a Realtime event failed.
 - A failed required transcription connection prevents startup. When translated audio is requested, a partial Japanese/English audio-session connection also prevents startup.
 - Do not treat setting the SDP answer as a completed connection. Move to `リスニング中` only after the required peer connection, and any audio connections requested at startup, have `connectionState === "connected"`.
 - Apply one 15-second timeout to the full startup sequence, including short-lived secret acquisition, WebRTC offer and SDP answer exchange, and peer connection establishment.
 - Stopping while `接続中` must cancel the in-progress WebRTC connection and prevent a late connection from returning the UI to `リスニング中`.
-- If a connected transcription or translated-audio session receives a Realtime API `error` event, stop the microphone, all WebRTC connections, text-translation work, VAD, and the finalization timer, then move to `接続エラー`.
+- If a connected transcription or Translation session receives a Realtime API `error` event, stop the microphone, all WebRTC connections, VAD, and the finalization timer, then move to `接続エラー`.
 
 ## 5. Data model
 
@@ -129,29 +129,26 @@ Browser / React / TypeScript
   ├─ useConversationSession
   │    ├─ aligned utterance state
   │    ├─ WebRTC transcription session: gpt-live-transcribe
-  │    ├─ streaming text translation requests
-  │    └─ optional WebRTC translated-audio sessions: target=en + target=ja
+  │    └─ WebRTC Translation sessions: target=en + target=ja
   ├─ useLocalVad
   │    └─ microphone capture + lightweight local voice activity detection
   └─ ConversationControls
        └─ transient control UI state and download actions
-          │ short-lived client secrets + source text
+          │ short-lived client secrets
 Local Vinext server / TypeScript
   ├─ /api/realtime/transcription
-  ├─ /api/realtime/session
-  └─ /api/translate
+  └─ /api/realtime/session
           │ OPENAI_API_KEY
 OpenAI APIs
   ├─ Realtime transcription: gpt-live-transcribe
-  ├─ Responses text translation: gpt-5.6-luna by default
-  └─ optional Realtime translated audio: gpt-realtime-translate
+  └─ Realtime translated text and audio: gpt-realtime-translate
 ```
 
-On the React side, limit `app/page.tsx` to screen composition. `useConversationSession` owns the transcription and optional translated-audio Realtime connections, streaming text-translation scheduling, aligned utterance state, and translated-audio control. `useLocalVad` owns the Web Audio API and RMS-based VAD lifecycle. `ConversationControls` owns transient UI-only state such as the download menu. Preserve these responsibility boundaries when adding features; do not move connection or VAD implementation back into the page component.
+On the React side, limit `app/page.tsx` to screen composition. `useConversationSession` owns the transcription and Translation Realtime connections, aligned utterance state, and translated-audio control. `useLocalVad` owns the Web Audio API and RMS-based VAD lifecycle. `ConversationControls` owns transient UI-only state such as the download menu. Preserve these responsibility boundaries when adding features; do not move connection or VAD implementation back into the page component.
 
-Always send the microphone track to one Realtime transcription WebRTC session. As source transcript deltas arrive, translate the accumulated source text through a streaming Responses API request and render each proxied text delta. Keep at most one text-translation request in flight per row; retain only the newest pending source snapshot, start successive requests at least 160 ms apart, and replace the displayed translation when the first delta for a newer snapshot arrives.
+Always send the microphone track to one Realtime transcription WebRTC session and two Realtime Translation WebRTC sessions in parallel. The transcription session supplies the source transcript. The English-target and Japanese-target Translation sessions supply translated transcript deltas and translated audio.
 
-When translated audio is enabled, also send the same microphone track to two Realtime Translation WebRTC sessions in parallel: one targeting English audio and one targeting Japanese audio. Ignore their transcript output because the text columns use the independent text-first path. When translated audio is `off`, do not create either Translation session. Turning audio off during a live session closes both; turning it on connects both for subsequent microphone audio.
+Use source-language detection from the transcription session to select only the opposite Translation session for display and playback. Keep output-transcript candidates buffered by row and target language until the source language is known. The audio control only mutes or unmutes the already-connected Translation audio tracks; it does not create or close Translation sessions.
 
 Use these browser-to-OpenAI endpoints:
 
@@ -165,17 +162,16 @@ Use these browser-to-OpenAI endpoints:
 - Read the long-lived key only from the `OPENAI_API_KEY` environment variable.
 - Store it in the gitignored `.env.local` file during local development.
 - Keep the API key empty in `.env.example`; include only non-sensitive model and latency defaults.
-- Return only short-lived Realtime client secrets from the local API to the browser. Proxy Responses text translation through the local server.
+- Return only short-lived Realtime client secrets from the local API to the browser.
 - Never store the API key in browser-exposed environment variables such as `NEXT_PUBLIC_*`.
 - Configure the Realtime input transcription model through the server-side `OPENAI_TRANSCRIPTION_MODEL` environment variable.
 - Use `gpt-live-transcribe` when `OPENAI_TRANSCRIPTION_MODEL` is unset or empty. Record the same default in `.env.example`.
 - Configure transcription latency through `OPENAI_TRANSCRIPTION_DELAY`. Accept `minimal`, `low`, `medium`, `high`, or `xhigh`; use `minimal` when unset, empty, or invalid.
-- Configure the text translation model through `OPENAI_TEXT_TRANSLATION_MODEL`; use `gpt-5.6-luna` when unset or empty.
 - Use `far_field` input noise reduction.
 
-`GET /api/realtime/session` returns only whether a key is configured; it never returns the key value. `POST /api/realtime/transcription` creates a ten-minute transcription secret configured for Japanese and English with low-latency deltas. `POST /api/realtime/session` accepts `ja` or `en` and creates a ten-minute translated-audio secret. `POST /api/translate` accepts source text and an opposite Japanese/English direction, calls the Responses API with `reasoning.effort: "none"`, and proxies only output-text deltas as a no-store plain-text stream.
+`GET /api/realtime/session` returns only whether a key is configured; it never returns the key value. `POST /api/realtime/transcription` creates a ten-minute transcription secret configured for Japanese and English with low-latency deltas. `POST /api/realtime/session` accepts `ja` or `en` and creates a ten-minute Translation secret for `gpt-realtime-translate`.
 
-After the key configuration check succeeds, the browser prefetches the transcription secret. It prefetches the Japanese-target and English-target translated-audio secrets only when audio playback is enabled. It reuses each secret in memory until five seconds before expiration. If prefetching fails or a secret expires, it fetches a replacement when the connection starts. Secrets are not stored in page storage or persisted.
+After the key configuration check succeeds, the browser prefetches the transcription secret and both target-language Translation secrets. It reuses each secret in memory until five seconds before expiration. If prefetching fails or a secret expires, it fetches a replacement when the connection starts. Secrets are not stored in page storage or persisted.
 
 ## 8. Realtime event processing
 
@@ -187,11 +183,9 @@ Classify text containing Japanese characters as `ja`, text containing Latin char
 
 ### Translation
 
-Send accumulated source-text snapshots to `POST /api/translate`. The server streams Responses API `response.output_text.delta` content back as plain text, and the browser renders each chunk on the opposite-language side.
+Consume `session.output_transcript.delta` from both target-language Translation sessions. Append each delta without inserting spaces, using `elapsed_ms` plus the local Translation-connection clock offset to select the aligned utterance row.
 
-Start the first request for a row immediately. Keep no more than one request in flight per row and retain only the newest pending snapshot while one is running. A translation for an earlier source prefix may render while the source continues growing. The first delta for the next snapshot replaces that provisional translation, and later deltas append to it. This avoids aborting every request during frequent transcription deltas while still converging to the latest source text.
-
-Do not use `session.output_transcript.delta` from optional translated-audio sessions for the text columns.
+Keep one accumulated candidate per row and target language. If the source language is not known yet, buffer both candidates. Once the dedicated transcription session identifies the source language, render only the candidate in the opposite language. Continue appending later deltas from that target session and ignore the same-language target for display. The source-language field always comes from `gpt-live-transcribe`, never from a Translation session.
 
 ### Utterance boundaries and alignment
 
@@ -210,7 +204,7 @@ This approach can combine a long utterance without silence into one row, misiden
 
 The options are `再生しない` (Do not play), `日本語` (Japanese), `English`, and `自動` (Auto). The default is `再生しない`.
 
-In the default `再生しない` mode, keep the runtime text-only: one `gpt-live-transcribe` Realtime connection plus streaming Responses text translation. Do not connect `gpt-realtime-translate`. When any playback mode is selected, connect both target-language `gpt-realtime-translate` sessions in parallel and use them only for translated audio.
+Always connect one `gpt-live-transcribe` session and both target-language `gpt-realtime-translate` sessions. In the default `再生しない` mode, keep both remote audio elements muted while continuing to consume translated transcript deltas. Selecting a playback mode unmutes only the matching opposite-language translated audio.
 
 Always play only the translation, which is the language opposite the source language.
 
@@ -219,7 +213,7 @@ Always play only the translation, which is the language opposite the source lang
 - Do not play audio when an explicitly selected language matches the source language.
 - `自動` plays the opposite language after source-language detection.
 - Reset language detection to `unknown` at session start and whenever audio for the next utterance is detected. Mute both outputs until the source language is known.
-- Changing to `再生しない` during a session closes both translated-audio connections. Changing from `再生しない` to a playback mode reconnects them for subsequent audio.
+- Changing the playback mode during a session only updates which translated audio element is muted. It does not reconnect the Translation sessions.
 
 ## 10. Downloads
 
@@ -233,19 +227,17 @@ Generate files in the browser from the current aligned records. Do not use serve
 ## 11. Latency strategy
 
 - Stream browser audio directly over WebRTC.
-- Prefetch the transcription client secret after confirming the API key configuration; prefetch translated-audio secrets only when playback is enabled.
-- In text-only mode, create one transcription session and no Translation sessions.
-- When playback is enabled, create both target-language audio sessions in parallel with the transcription session.
+- Prefetch the transcription client secret and both Translation client secrets after confirming the API key configuration.
+- Create the transcription session and both target-language Translation sessions in parallel.
 - Fetch each client secret and create its WebRTC offer in parallel.
-- Create an empty draft row at local speech start and render transcription and Responses translation deltas immediately as they arrive.
-- Use `gpt-live-transcribe` with `minimal` delay by default, and use `gpt-5.6-luna` with no reasoning as the default lightweight text translator.
-- Serialize text-translation requests per row, retain the latest pending source snapshot, and impose a 160 ms minimum start interval.
+- Create an empty draft row at local speech start and render transcription plus opposite-language Translation transcript deltas as soon as the source language is known.
+- Use `gpt-live-transcribe` with `minimal` delay by default and `gpt-realtime-translate` for translated text and audio.
 - Finalize utterances after 320 ms of silence when terminal punctuation is present, or 450 ms otherwise, without letting late deltas rewind the silence timer.
 - Do not rerender an unchanged source snapshot, and keep each Realtime `item_id` bound to one aligned row.
 - Do not animate automatic scrolling.
 - Client logic cannot eliminate model processing or network latency.
 - Measure connection startup, first source transcript, first translation, and utterance finalization separately during evaluation.
-- The existing live-API smoke CLI accepts `--repeat <count>` and reports nearest-rank p50 and p95 values for the first source delta, first Translation API output-transcript delta, and their difference. It benchmarks the legacy audio-translation path, not the new Responses text path.
+- The live-API smoke CLI accepts `--repeat <count>` and reports nearest-rank p50 and p95 values for the first Translation-session source delta, first output-transcript delta, and their difference.
 - In the browser, measure local-VAD speech start to the first rendered source and translation text, plus silence start to the rendered final-row state.
 - Store browser measurements without transcript content in `window.__xlatorLatency`, dispatch an `xlator:latency` event, and log the same structured record to the developer console.
 
@@ -253,7 +245,7 @@ Generate files in the browser from the current aligned records. Do not use serve
 
 Normal CI runs `npm run verify` and requires linting, type checking, a production build, and behavioral tests that do not call the live API.
 
-Use `npm run test:smoke:api` for legacy direct-Translation real-audio and live-API verification. The runner reads uncompressed 16-bit PCM WAV files, downmixes their channels, converts them to 24 kHz PCM16, and sends them to Realtime Translation over WebSocket in real time in 100 ms chunks. The new text-first browser path requires its separate physical-microphone and A/B checks described below.
+Use `npm run test:smoke:api` for direct Realtime Translation real-audio and live-API verification. The runner reads uncompressed 16-bit PCM WAV files, downmixes their channels, converts them to 24 kHz PCM16, and sends them to Realtime Translation over WebSocket in real time in 100 ms chunks. The browser's combined transcription-plus-Translation composition still requires the separate physical-microphone checks described below.
 
 - Compare `session.input_transcript.delta` with the reference transcript.
 - Use CER for Japanese and Japanese/English mixed input, and WER for English.
@@ -271,12 +263,12 @@ CI does not reproduce a physical microphone. Before a release, manually verify b
 
 | Area | Implementation | Verification | Current treatment |
 | --- | --- | --- | --- |
-| Text-first browser path | Dedicated transcription secret and WebRTC connection, speech-start draft rows, serialized streaming Responses translation, and conditional translated-audio connections are implemented | Production build and automated route, SSE parsing, row-creation, and connection utility tests pass | Physical-microphone behavior and end-to-end latency are not verified |
-| Text-first live API sanity | The server can create transcription and translated-audio client secrets, and both text directions stream through Responses | On 2026-09-01, both secret requests returned 200. One real-audio transcription run per direction succeeded with `minimal` delay and `languages: ["en", "ja"]`: Japanese first delta 3,186 ms and English 2,387 ms. After prompt tuning, one final text request per direction returned the first delta in 1,435 ms for Japanese-to-English and 889 ms for English-to-Japanese. | API components verified individually; browser WebRTC composition, partial-text scheduling, repeated-run percentiles, and A/B improvement are not verified |
-| Normal CI | GitHub Actions runs `npm run verify` | Lint, type checking, build, and 34 tests pass on the current change branch | Required pull request quality gate |
-| Live-API smoke CLI | WAV conversion, WebSocket streaming, CER/WER, translation terms, translated audio, repeated runs, p50/p95 summaries, latency comparison, and clean closure checks are implemented | On 2026-09-01, both registered cases ran ten times locally against the direct Realtime Translation path. All 20 runs returned source text, translation text, translated audio, and clean session closure. The command exited nonzero because some translation WER and required-term assertions failed. | Legacy-path benchmark only; it does not validate the new transcription-plus-Responses browser architecture |
+| Dual Realtime browser path | Dedicated `gpt-live-transcribe` source transcription plus English-target and Japanese-target `gpt-realtime-translate` text/audio sessions are implemented; speech-start draft rows and target-language candidate buffering preserve aligned rows | Production build and automated route, row-creation, candidate-buffering, alignment, and connection utility tests pass | Physical-microphone behavior and end-to-end latency are not verified |
+| Live API sanity | The server can create transcription and Translation client secrets | On 2026-09-01, both secret request types returned 200. One real-audio transcription run per direction succeeded with `minimal` delay and `languages: ["en", "ja"]`: Japanese first delta 3,186 ms and English 2,387 ms. | API components verified individually; the new three-session browser composition is not verified |
+| Normal CI | GitHub Actions runs `npm run verify` | Lint, type checking, build, and 31 tests pass locally on the current change branch | Required pull request quality gate |
+| Live-API smoke CLI | WAV conversion, WebSocket streaming, CER/WER, translation terms, translated audio, repeated runs, p50/p95 summaries, latency comparison, and clean closure checks are implemented | On 2026-09-01, both registered cases ran ten times locally. On 2026-09-02, one regression run per direction again returned source text, translation text, translated audio, and clean session closure. The command exited nonzero on translation error-rate and required-term assertions; the English-to-Japanese output omitted the required greeting. | Covers the same Translation model and output events as the browser, but uses the Translation session's optional input transcript instead of the browser's dedicated transcription session |
 | Real-audio fixture | Japanese-to-English and English-to-Japanese real-speech WAV files and reference data are registered | The local `--validate-only` check passes, and both files were processed successfully in ten live runs per direction | Human confirmation of the Japanese reference is pending because all ten live transcripts included `とても`, which is absent from the current reference; mixed-language, numbers, dates, times, and proper-noun coverage remains incomplete |
-| Browser latency diagnostics | Speech-to-source-display, speech-to-translation-display, and silence-to-row-final measurements are implemented without storing transcript content | Pure timing calculations and the production build pass automated verification | New-path physical-microphone measurements and a legacy/new A/B comparison have not been collected |
+| Browser latency diagnostics | Speech-to-source-display, speech-to-translation-display, and silence-to-row-final measurements are implemented without storing transcript content | Pure timing calculations and the production build pass automated verification | Dual Realtime physical-microphone measurements have not been collected |
 | Manual GitHub Actions workflow | The `workflow_dispatch` `Realtime API Smoke` workflow is implemented | Normal CI passes after adding the workflow; a live GitHub Actions run has not been performed | API key registration and execution from the default branch remain incomplete |
 | Physical microphone verification | Manual procedure is defined in `docs/realtime-smoke.md` | Not performed | Manual pre-release check, not automated CI |
 
@@ -293,17 +285,17 @@ CI does not reproduce a physical microphone. Before a release, manually verify b
    - Preserve a successful result for input transcription, translation, translated audio, and `session.closed`.
 3. Verify the browser MVP with a physical microphone.
    - Complete the six steps in `docs/realtime-smoke.md`.
-   - In `再生しない`, verify that only transcription connects, the empty row appears at speech start, Responses translation streams into the opposite column, and no translated audio plays.
-   - With playback enabled, verify both optional Translation sessions, alternating Japanese/English speech, row alignment, translated audio, live mode changes, and stopping both during and after connection.
+   - In `再生しない`, verify that transcription and both Translation sessions connect, the empty row appears at speech start, the opposite Translation transcript streams into the aligned row, and translated audio remains muted.
+   - With playback enabled, verify alternating Japanese/English speech, row alignment, opposite-language translated audio, live mute-mode changes without reconnection, and stopping both during and after connection.
 4. Tune thresholds using the first measured results.
-   - The legacy 2026-09-01 direct-Translation benchmark measured Japanese-to-English source p50/p95 at 3,904/4,920 ms, translation at 4,199/10,364 ms, and paired translation-minus-source at 294/6,207 ms. Translation was the median critical path and had the largest tail.
-   - The same legacy benchmark measured English-to-Japanese source p50/p95 at 2,973/3,146 ms, translation at 2,619/3,852 ms, and paired translation-minus-source at -329/910 ms. Source transcription was the median critical path.
-   - Add an equivalent benchmark for the new `gpt-live-transcribe` plus Responses text path and compare first visible source/translation p50 and p95 before claiming a latency improvement.
+   - The 2026-09-01 direct-Translation benchmark measured Japanese-to-English source p50/p95 at 3,904/4,920 ms, translation at 4,199/10,364 ms, and paired translation-minus-source at 294/6,207 ms. Translation was the median critical path and had the largest tail.
+   - The same benchmark measured English-to-Japanese source p50/p95 at 2,973/3,146 ms, translation at 2,619/3,852 ms, and paired translation-minus-source at -329/910 ms. Source transcription was the median critical path.
+   - Add a browser-composed benchmark for the dedicated `gpt-live-transcribe` source path plus `gpt-realtime-translate` output path before claiming a latency improvement.
    - The current 0.35 source and 0.65 translation thresholds accepted all source runs and all English-to-Japanese translation error-rate checks, but Japanese-to-English WER passed only 5 of 10 runs. Required-term coverage passed 0 of 10 Japanese-to-English runs and 5 of 10 English-to-Japanese runs because valid paraphrases are not fully represented.
    - Human-confirm the source references and expand acceptable semantic variants before changing thresholds or model settings.
-   - Do not further change local VAD thresholds or transcription-model settings until the new-path live benchmark and physical-microphone measurements are available.
+   - Do not further change local VAD thresholds or transcription-model settings until the dual Realtime browser benchmark and physical-microphone measurements are available.
 
-Until items 1 through 3 succeed, describe the legacy live-API smoke test as completed with evaluation failures, and the new text-first browser path as "implemented but field verification pending."
+Until items 1 through 3 succeed, describe the direct Translation live-API smoke test as completed with evaluation failures, and the dual Realtime browser path as "implemented but field verification pending."
 
 ## 13. Currently unsupported
 
@@ -338,20 +330,17 @@ app/components/session-error-toast.tsx   Connection error display
 app/components/site-header.tsx           Header
 app/components/transcript-panel.tsx      Japanese and English transcript panels
 app/components/ui-icons.tsx              UI icons and waveform
-app/hooks/use-conversation-session.ts    Transcription, text translation, utterance state, and optional audio control
+app/hooks/use-conversation-session.ts    Transcription, Realtime translation, utterance state, and audio control
 app/hooks/use-local-vad.ts               Local VAD using the Web Audio API
 app/globals.css                          Layout and styles
 app/api/realtime/transcription/route.ts  Short-lived transcription secret issuance
-app/api/realtime/session/route.ts        Optional translated-audio secret issuance
-app/api/translate/route.ts               Streaming Responses text-translation proxy
+app/api/realtime/session/route.ts        Short-lived Translation secret issuance
 lib/demo-utterances.ts                   Initial-screen fixture
 lib/download-log.ts                      TXT / CSV / JSON / SRT generation
 lib/browser-latency.ts                   Browser latency measurement records
 lib/local-vad.ts                         Pure VAD silence-duration logic
 lib/realtime-transcription.ts            Realtime transcription WebRTC connection
-lib/realtime-translation.ts              Optional translated-audio WebRTC connection
-lib/text-translation.ts                  Responses request and SSE delta handling
-lib/text-translation-client.ts           Browser text-translation stream reader
+lib/realtime-translation.ts              Realtime translated text/audio WebRTC connection
 lib/translation-types.ts                 Shared data types
 lib/utterance-alignment.ts               Language detection and utterance alignment
 lib/realtime-smoke.ts                    WAV conversion, Realtime WebSocket, and accuracy evaluation
@@ -370,14 +359,14 @@ Do not keep scaffold code for databases, authentication, sample APIs, or other f
 - The latest rows in both columns are visible on the initial screen.
 - Desktop horizontal margins are minimal.
 - Both panels automatically follow the final row in the 16-utterance sample data.
-- Starting a conversation in `再生しない` connects one transcription Realtime session after microphone permission is granted and does not connect Realtime Translation.
-- Starting with translated audio enabled connects the transcription session and both target-language audio sessions.
+- Starting a conversation connects one transcription Realtime session and both target-language Translation sessions after microphone permission is granted.
+- `再生しない` keeps both translated audio outputs muted without disconnecting Translation text.
 - Prefetched short-lived client secrets are reused at connection start if they have not expired.
 - Local speech start creates an empty aligned draft row before transcript text arrives.
 - Alternating Japanese and English speech produces both languages under the same sequence number.
 - When local VAD detects silence after speech, rows finalize after approximately 320 ms with terminal punctuation or 450 ms otherwise.
 - Realtime transcription deltas and completions stay associated with their row through `item_id`.
-- Responses text deltas render only on the side opposite the detected source language.
+- Realtime Translation output-transcript deltas render only on the side opposite the detected source language.
 - Translated audio plays only in the language opposite the source language.
 - TXT, CSV, JSON, and SRT files can be downloaded.
 - Real-audio fixtures can be validated for structure and WAV conversion without an API connection.
