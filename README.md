@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/shinichi-takayanagi/xlator/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/shinichi-takayanagi/xlator/actions/workflows/ci.yml)
 
-A local web app that captures Japanese and English conversations from a shared microphone and displays each utterance in both languages. Speech recognition and translation require an internet connection to the OpenAI Realtime and Responses APIs.
+A local web app that captures Japanese and English conversations from a shared microphone and displays each utterance in both languages. Speech recognition and translation require an internet connection to the OpenAI Realtime API.
 
 ![xlator interface](docs/images/xlator-current.jpg)
 

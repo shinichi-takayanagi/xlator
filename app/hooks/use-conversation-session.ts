@@ -19,11 +19,13 @@ import {
   type TranslationConnection,
   type TranslationEvent,
 } from "@/lib/realtime-translation";
-import { streamTextTranslation } from "@/lib/text-translation-client";
 import type { Language, TargetLanguage, Utterance } from "@/lib/translation-types";
 import {
+  alignSourceAndTranslation,
+  appendTranslationCandidate,
   createLiveUtterance,
   detectLanguage,
+  findLastRowStartingAtOrBefore,
   replaceRow,
 } from "@/lib/utterance-alignment";
 
@@ -31,24 +33,7 @@ export type AudioMode = "off" | "ja" | "en" | "auto";
 export type ConnectionStatus = "idle" | "connecting" | "live" | "error";
 
 const FALLBACK_FINALIZE_MS = 1_200;
-const TEXT_TRANSLATION_MIN_INTERVAL_MS = 160;
 const RECENT_EMPTY_ROW_REUSE_MS = 3_000;
-
-type TextTranslationJob = {
-  controller: AbortController | null;
-  timer: number | null;
-  running: boolean;
-  lastStartedAt: number;
-  pending: {
-    sourceText: string;
-    sourceLanguage: Language;
-    targetLanguage: Language;
-  } | null;
-};
-
-function isAbortError(error: unknown) {
-  return error instanceof DOMException && error.name === "AbortError";
-}
 
 export function useConversationSession() {
   const [isListening, setIsListening] = useState(false);
@@ -61,12 +46,9 @@ export function useConversationSession() {
 
   const transcriptionConnectionRef = useRef<TranscriptionConnection | null>(null);
   const translationConnectionsRef = useRef<TranslationConnection[]>([]);
-  const audioConnectionPromiseRef = useRef<Promise<void> | null>(null);
-  const audioConnectionAbortControllerRef = useRef<AbortController | null>(null);
   const startAbortControllerRef = useRef<AbortController | null>(null);
   const sourceStreamRef = useRef<MediaStream | null>(null);
   const rowsRef = useRef(rows);
-  const isListeningRef = useRef(false);
   const activeRowIdRef = useRef<string | null>(null);
   const activeRowSequenceRef = useRef<number | null>(null);
   const transcriptionItemRowsRef = useRef(new Map<string, string>());
@@ -84,8 +66,10 @@ export function useConversationSession() {
     sequence: number;
     startedAt: number;
   } | null>(null);
-  const textTranslationJobsRef = useRef(new Map<string, TextTranslationJob>());
-  const lastTranslatedInputRef = useRef(new Map<string, string>());
+  const translationCandidatesRef = useRef(
+    new Map<string, Partial<Record<TargetLanguage, string>>>(),
+  );
+  const translationClockOffsetsRef = useRef(new Map<TargetLanguage, number>());
 
   useEffect(() => {
     rowsRef.current = rows;
@@ -133,7 +117,6 @@ export function useConversationSession() {
   }, [rows]);
 
   useEffect(() => {
-    isListeningRef.current = isListening;
     if (!isListening) return;
     const timer = window.setInterval(() => setElapsed((value) => value + 1), 1_000);
     return () => window.clearInterval(timer);
@@ -149,10 +132,8 @@ export function useConversationSession() {
   useEffect(() => {
     if (apiConfigured !== true) return;
     void prefetchTranscriptionClientSecret().catch(() => undefined);
-    if (audioMode !== "off") {
-      void prefetchTranslationClientSecrets().catch(() => undefined);
-    }
-  }, [apiConfigured, audioMode]);
+    void prefetchTranslationClientSecrets().catch(() => undefined);
+  }, [apiConfigured]);
 
   const syncAudioOutputs = useCallback(() => {
     const mode = audioModeRef.current;
@@ -254,18 +235,7 @@ export function useConversationSession() {
     onSpeechEnd: handleVadSpeechEnd,
   });
 
-  const closeTextTranslationJobs = useCallback(() => {
-    for (const job of textTranslationJobsRef.current.values()) {
-      if (job.timer !== null) window.clearTimeout(job.timer);
-      job.controller?.abort();
-    }
-    textTranslationJobsRef.current.clear();
-    lastTranslatedInputRef.current.clear();
-  }, []);
-
-  const closeTranslatedAudio = useCallback(() => {
-    audioConnectionAbortControllerRef.current?.abort();
-    audioConnectionAbortControllerRef.current = null;
+  const closeTranslationConnections = useCallback(() => {
     for (const connection of translationConnectionsRef.current) connection.close();
     translationConnectionsRef.current = [];
   }, []);
@@ -273,8 +243,7 @@ export function useConversationSession() {
   const closeRealtimeResources = useCallback(() => {
     startAbortControllerRef.current?.abort();
     startAbortControllerRef.current = null;
-    closeTextTranslationJobs();
-    closeTranslatedAudio();
+    closeTranslationConnections();
     stopLocalVad();
     activeSourceTextRef.current = "";
     speechStartedAtRef.current = null;
@@ -286,7 +255,7 @@ export function useConversationSession() {
     sourceStreamRef.current = null;
     if (finalizeTimerRef.current) window.clearTimeout(finalizeTimerRef.current);
     finalizeTimerRef.current = null;
-  }, [closeTextTranslationJobs, closeTranslatedAudio, stopLocalVad]);
+  }, [closeTranslationConnections, stopLocalVad]);
 
   const failSession = useCallback((message: string) => {
     closeRealtimeResources();
@@ -338,18 +307,13 @@ export function useConversationSession() {
       if (sourceText === row.sourceText) return current;
 
       const sourceLanguage = detectLanguage(sourceText);
-      let ja = row.ja;
-      let en = row.en;
-      if (
-        sourceLanguage !== "unknown" &&
-        row.sourceLanguage !== "unknown" &&
-        sourceLanguage !== row.sourceLanguage
-      ) {
-        ja = "";
-        en = "";
-      }
-      if (sourceLanguage === "ja") ja = sourceText;
-      if (sourceLanguage === "en") en = sourceText;
+      const translationCandidates = translationCandidatesRef.current.get(row.id);
+      const { ja, en } = alignSourceAndTranslation(
+        row,
+        sourceText,
+        sourceLanguage,
+        translationCandidates ?? {},
+      );
 
       if (row.id === activeRowIdRef.current) {
         activeSourceTextRef.current = sourceText;
@@ -419,217 +383,118 @@ export function useConversationSession() {
     syncAudioOutputs,
   ]);
 
-  const handleTranslatedAudioEvent = useCallback((
-    _targetLanguage: TargetLanguage,
+  const handleTranslationOutputDelta = useCallback((
+    targetLanguage: TargetLanguage,
     event: TranslationEvent,
   ) => {
-    if (event.type === "error") {
+    if (!event.delta) return;
+    const fallbackElapsedMs = Math.max(0, Date.now() - sessionStartedAtRef.current);
+    const elapsedMs = typeof event.elapsed_ms === "number"
+      ? event.elapsed_ms + (translationClockOffsetsRef.current.get(targetLanguage) ?? 0)
+      : fallbackElapsedMs;
+
+    const latest = rowsRef.current.at(-1);
+    const latestEndMs = latest?.endMs ?? latest?.startMs ?? 0;
+    if (
+      !activeRowIdRef.current &&
+      (!latest || elapsedMs > latestEndMs + 700)
+    ) {
+      if (speechStartedAtRef.current === null) {
+        beginSpeechMeasurement(performance.now());
+      }
+      ensureActiveRow(elapsedMs);
+      lastSourceLanguageRef.current = "unknown";
+      queueMicrotask(syncAudioOutputs);
+    }
+
+    setRows((current) => {
+      if (current.length === 0) return current;
+      let index = findLastRowStartingAtOrBefore(current, elapsedMs + 400);
+      if (index < 0 && activeRowIdRef.current) {
+        index = current.findIndex((row) => row.id === activeRowIdRef.current);
+      }
+      if (index < 0) index = current.length - 1;
+
+      const row = current[index];
+      const candidates = translationCandidatesRef.current.get(row.id) ?? {};
+      const nextCandidates = appendTranslationCandidate(
+        candidates,
+        targetLanguage,
+        event.delta!,
+      );
+      const translatedText = nextCandidates[targetLanguage] ?? "";
+      translationCandidatesRef.current.set(row.id, nextCandidates);
+
+      if (
+        row.sourceLanguage === "unknown" ||
+        row.sourceLanguage === targetLanguage
+      ) {
+        return current;
+      }
+      return replaceRow(current, index, {
+        ...row,
+        [targetLanguage]: translatedText,
+      });
+    });
+  }, [beginSpeechMeasurement, ensureActiveRow, syncAudioOutputs]);
+
+  const handleTranslationEvent = useCallback((
+    targetLanguage: TargetLanguage,
+    event: TranslationEvent,
+  ) => {
+    if (event.type === "session.output_transcript.delta") {
+      handleTranslationOutputDelta(targetLanguage, event);
+    } else if (event.type === "error") {
       failSession(
-        event.error?.message ?? "翻訳音声の処理中にエラーが発生しました。",
+        event.error?.message ?? "Realtime翻訳中にエラーが発生しました。",
       );
     }
-  }, [failSession]);
+  }, [failSession, handleTranslationOutputDelta]);
 
-  const connectTranslatedAudio = useCallback(async (
+  const connectTranslationSessions = useCallback(async (
     sourceStream: MediaStream,
     signal: AbortSignal,
   ) => {
-    if (translationConnectionsRef.current.length === 2) return;
-    if (audioConnectionPromiseRef.current) return audioConnectionPromiseRef.current;
-
-    const pending = (async () => {
-      const results = await Promise.allSettled(
-        (["en", "ja"] as const).map((targetLanguage) => connectTranslation({
+    const results = await Promise.allSettled(
+      (["en", "ja"] as const).map((targetLanguage) => {
+        translationClockOffsetsRef.current.set(
+          targetLanguage,
+          Math.max(0, Date.now() - sessionStartedAtRef.current),
+        );
+        return connectTranslation({
           targetLanguage,
           sourceStream,
           muted: true,
           signal,
-          onEvent: handleTranslatedAudioEvent,
+          onEvent: handleTranslationEvent,
           onConnectionState: (_language, state) => {
             if (state === "failed" && !signal.aborted) {
-              failSession("翻訳音声のRealtime接続が切れました。");
+              failSession("Realtime翻訳との接続が切れました。");
             }
           },
-        })),
-      );
-      const liveConnections = results.flatMap((result) => (
-        result.status === "fulfilled" ? [result.value] : []
-      ));
-      const failed = results.find((result) => result.status === "rejected");
-      if (signal.aborted) {
-        liveConnections.forEach((connection) => connection.close());
-        return;
-      }
-      if (failed?.status === "rejected") {
-        liveConnections.forEach((connection) => connection.close());
-        throw failed.reason;
-      }
-      translationConnectionsRef.current = liveConnections;
-      syncAudioOutputs();
-    })();
-
-    audioConnectionPromiseRef.current = pending;
-    try {
-      await pending;
-    } finally {
-      if (audioConnectionPromiseRef.current === pending) {
-        audioConnectionPromiseRef.current = null;
-      }
+        });
+      }),
+    );
+    const liveConnections = results.flatMap((result) => (
+      result.status === "fulfilled" ? [result.value] : []
+    ));
+    const failed = results.find((result) => result.status === "rejected");
+    if (signal.aborted) {
+      liveConnections.forEach((connection) => connection.close());
+      return;
     }
-  }, [failSession, handleTranslatedAudioEvent, syncAudioOutputs]);
+    if (failed?.status === "rejected") {
+      liveConnections.forEach((connection) => connection.close());
+      throw failed.reason;
+    }
+    translationConnectionsRef.current = liveConnections;
+    syncAudioOutputs();
+  }, [failSession, handleTranslationEvent, syncAudioOutputs]);
 
   useEffect(() => {
     audioModeRef.current = audioMode;
-    if (!isListening) {
-      syncAudioOutputs();
-      return;
-    }
-
-    if (audioMode === "off") {
-      closeTranslatedAudio();
-      return;
-    }
-
     syncAudioOutputs();
-    if (translationConnectionsRef.current.length === 2) return;
-    const sourceStream = sourceStreamRef.current;
-    if (!sourceStream) return;
-    const reportConnectionError = (error: unknown, signal: AbortSignal) => {
-      if (signal.aborted || isAbortError(error)) return;
-      const message = error instanceof Error
-        ? error.message
-        : "翻訳音声を開始できませんでした。";
-      failSession(message);
-    };
-    const pending = audioConnectionPromiseRef.current;
-    const currentController = audioConnectionAbortControllerRef.current;
-    if (pending && currentController && !currentController.signal.aborted) return;
-
-    const controller = new AbortController();
-    audioConnectionAbortControllerRef.current = controller;
-    if (pending) {
-      void pending.catch(() => undefined).then(() => {
-        if (
-          controller.signal.aborted ||
-          audioModeRef.current === "off" ||
-          !isListeningRef.current
-        ) {
-          return;
-        }
-        return connectTranslatedAudio(sourceStream, controller.signal)
-          .catch((error) => reportConnectionError(error, controller.signal));
-      });
-      return;
-    }
-
-    void connectTranslatedAudio(sourceStream, controller.signal)
-      .catch((error) => reportConnectionError(error, controller.signal));
-  }, [
-    audioMode,
-    closeTranslatedAudio,
-    connectTranslatedAudio,
-    failSession,
-    isListening,
-    syncAudioOutputs,
-  ]);
-
-  useEffect(() => {
-    if (!isListening) return;
-    for (const row of rows) {
-      if (row.sourceLanguage === "unknown" || !row.sourceText?.trim()) continue;
-      const sourceLanguage = row.sourceLanguage;
-      const targetLanguage: Language = sourceLanguage === "ja" ? "en" : "ja";
-      const inputKey = `${sourceLanguage}:${row.sourceText}`;
-      if (lastTranslatedInputRef.current.get(row.id) === inputKey) continue;
-      lastTranslatedInputRef.current.set(row.id, inputKey);
-
-      const previous = textTranslationJobsRef.current.get(row.id);
-      const job = previous ?? {
-        controller: null,
-        timer: null,
-        running: false,
-        lastStartedAt: 0,
-        pending: null,
-      } satisfies TextTranslationJob;
-      job.pending = {
-        sourceText: row.sourceText,
-        sourceLanguage,
-        targetLanguage,
-      };
-      textTranslationJobsRef.current.set(row.id, job);
-
-      const runNextTranslation = () => {
-        const latestJob = textTranslationJobsRef.current.get(row.id);
-        if (
-          !latestJob ||
-          latestJob.running ||
-          latestJob.timer !== null ||
-          !latestJob.pending
-        ) {
-          return;
-        }
-        const delay = Math.max(
-          0,
-          TEXT_TRANSLATION_MIN_INTERVAL_MS -
-            (performance.now() - latestJob.lastStartedAt),
-        );
-        latestJob.timer = window.setTimeout(() => {
-          const activeJob = textTranslationJobsRef.current.get(row.id);
-          const request = activeJob?.pending;
-          if (!activeJob || !request) return;
-          activeJob.pending = null;
-          activeJob.timer = null;
-          activeJob.running = true;
-          activeJob.lastStartedAt = performance.now();
-          const controller = new AbortController();
-          activeJob.controller = controller;
-          let receivedDelta = false;
-
-          void streamTextTranslation({
-            text: request.sourceText,
-            sourceLanguage: request.sourceLanguage,
-            targetLanguage: request.targetLanguage,
-            signal: controller.signal,
-            onDelta: (delta) => {
-              if (controller.signal.aborted) return;
-              const replaceExisting = !receivedDelta;
-              receivedDelta = true;
-              setRows((current) => {
-                const index = current.findIndex((candidate) => candidate.id === row.id);
-                if (index < 0) return current;
-                const currentRow = current[index];
-                if (
-                  currentRow.sourceLanguage !== request.sourceLanguage ||
-                  !currentRow.sourceText?.startsWith(request.sourceText)
-                ) {
-                  return current;
-                }
-                return replaceRow(current, index, {
-                  ...currentRow,
-                  [request.targetLanguage]: replaceExisting
-                    ? delta
-                    : `${currentRow[request.targetLanguage]}${delta}`,
-                });
-              });
-            },
-          }).catch((error) => {
-            if (controller.signal.aborted || isAbortError(error)) return;
-            const message = error instanceof Error
-              ? error.message
-              : "テキスト翻訳に失敗しました。";
-            if (isListeningRef.current) failSession(message);
-          }).finally(() => {
-            const completedJob = textTranslationJobsRef.current.get(row.id);
-            if (!completedJob || completedJob.controller !== controller) return;
-            completedJob.controller = null;
-            completedJob.running = false;
-            runNextTranslation();
-          });
-        }, delay);
-      };
-      runNextTranslation();
-    }
-  }, [failSession, isListening, rows]);
+  }, [audioMode, syncAudioOutputs]);
 
   useEffect(() => () => closeRealtimeResources(), [closeRealtimeResources]);
 
@@ -650,6 +515,8 @@ export function useConversationSession() {
     activeRowIdRef.current = null;
     activeRowSequenceRef.current = null;
     transcriptionItemRowsRef.current.clear();
+    translationCandidatesRef.current.clear();
+    translationClockOffsetsRef.current.clear();
     lastSourceLanguageRef.current = "unknown";
     activeSourceTextRef.current = "";
     speechStartedAtRef.current = null;
@@ -690,10 +557,11 @@ export function useConversationSession() {
       }).then((connection) => {
         transcriptionConnectionRef.current = connection;
       });
-      const audioPromise = audioModeRef.current === "off"
-        ? Promise.resolve()
-        : connectTranslatedAudio(sourceStream, startAbortController.signal);
-      await Promise.all([transcriptionPromise, audioPromise]);
+      const translationPromise = connectTranslationSessions(
+        sourceStream,
+        startAbortController.signal,
+      );
+      await Promise.all([transcriptionPromise, translationPromise]);
 
       if (startAbortController.signal.aborted) return;
       setApiConfigured(true);

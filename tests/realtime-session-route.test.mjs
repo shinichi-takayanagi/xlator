@@ -38,7 +38,7 @@ test("validates the target language", async () => {
   assert.equal(response.status, 400);
 });
 
-test("creates a ten-minute translated-audio secret without duplicate transcription", async () => {
+test("creates a ten-minute translation secret without duplicate transcription", async () => {
   process.env.OPENAI_API_KEY = "server-only-test-key";
   let upstreamRequest;
   globalThis.fetch = async (url, init) => {
@@ -69,6 +69,5 @@ test("keeps example environment values free of secrets", async () => {
   assert.match(exampleEnv, /^OPENAI_API_KEY=$/m);
   assert.match(exampleEnv, /^OPENAI_TRANSCRIPTION_MODEL=gpt-live-transcribe$/m);
   assert.match(exampleEnv, /^OPENAI_TRANSCRIPTION_DELAY=minimal$/m);
-  assert.match(exampleEnv, /^OPENAI_TEXT_TRANSLATION_MODEL=gpt-5\.6-luna$/m);
   assert.doesNotMatch(exampleEnv, /sk-[A-Za-z0-9]{20,}/);
 });
