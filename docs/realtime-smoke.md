@@ -60,9 +60,9 @@ A physical microphone cannot be reproduced reliably in CI. Complete the followin
 
 1. Add the API key to `.env.local` and start the app with `npm run dev`.
 2. Allow microphone access in the browser and speak at least three utterances, alternating between Japanese and English.
-3. Keep translated audio at `再生しない`, start the conversation, and confirm that the transcription session plus both target-language Translation sessions reach `リスニング中`. Confirm that an empty aligned row appears when speech begins, the `gpt-live-transcribe` source and opposite-language Translation transcript stream under the same row number, and both translated audio outputs remain muted.
+3. Keep translated audio at `再生しない`, start the conversation, and confirm that the transcription session plus both target-language Translation sessions reach `リスニング中`. Confirm that one empty aligned row appears after sustained local speech starts, the `gpt-live-transcribe` source and opposite-language Translation transcript stream under the same row number, and both translated audio outputs remain muted. Background noise and Translation deltas must not create persistent additional rows.
 4. Stop, set translated audio to `自動` (Auto), and start again. Confirm that only the language opposite the source language is played. Switch back to `再生しない` and on again during the live session; confirm through browser network diagnostics that the Translation connections stay open while only their mute state changes.
-5. Confirm that the session can be stopped both while connecting and after connecting, and that live transcript rows remain visible afterward.
+5. Confirm that the session can be stopped both while connecting and after connecting, that populated live transcript rows remain visible afterward, and that no empty `処理中` rows remain.
 6. Open the browser developer console and inspect `window.__xlatorLatency`. Confirm that each completed utterance records `speech-to-source-display`, `speech-to-translation-display`, and `silence-to-row-final` where local VAD detected the boundaries. Compare these measurements with the direct Translation benchmark only after collecting repeated representative microphone runs.
 
 This is a separate manual smoke test covering microphone permission, WebRTC, and browser audio playback. It is not part of the file-based Realtime API accuracy evaluation.

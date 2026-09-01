@@ -25,7 +25,8 @@ import {
   appendTranslationCandidate,
   createLiveUtterance,
   detectLanguage,
-  findLastRowStartingAtOrBefore,
+  findReusableTranscriptionRow,
+  findTranslationRowIndex,
   replaceRow,
 } from "@/lib/utterance-alignment";
 
@@ -33,7 +34,13 @@ export type AudioMode = "off" | "ja" | "en" | "auto";
 export type ConnectionStatus = "idle" | "connecting" | "live" | "error";
 
 const FALLBACK_FINALIZE_MS = 1_200;
-const RECENT_EMPTY_ROW_REUSE_MS = 3_000;
+const EMPTY_ROW_CLEANUP_MS = 5_000;
+const PENDING_TRANSLATION_MAX_AGE_MS = 3_000;
+
+type PendingTranslation = {
+  elapsedMs: number;
+  text: string;
+};
 
 export function useConversationSession() {
   const [isListening, setIsListening] = useState(false);
@@ -50,9 +57,14 @@ export function useConversationSession() {
   const sourceStreamRef = useRef<MediaStream | null>(null);
   const rowsRef = useRef(rows);
   const activeRowIdRef = useRef<string | null>(null);
-  const activeRowSequenceRef = useRef<number | null>(null);
+  const rowIdCounterRef = useRef(0);
   const transcriptionItemRowsRef = useRef(new Map<string, string>());
+  const transcriptionRowItemsRef = useRef(new Map<string, string>());
+  const unboundTranscriptionRowsRef = useRef<string[]>([]);
+  const committedTranscriptionRowsRef = useRef(new Set<string>());
+  const transcriptionClockOffsetRef = useRef(0);
   const finalizeTimerRef = useRef<number | null>(null);
+  const emptyRowCleanupTimersRef = useRef(new Map<string, number>());
   const activeSourceTextRef = useRef("");
   const sessionStartedAtRef = useRef(0);
   const lastSourceLanguageRef = useRef<Language | "unknown">("unknown");
@@ -63,11 +75,14 @@ export function useConversationSession() {
   const sourceDisplayMeasuredRowsRef = useRef(new Set<string>());
   const translationDisplayMeasuredRowsRef = useRef(new Set<string>());
   const pendingFinalizationLatencyRef = useRef<{
-    sequence: number;
+    rowId: string;
     startedAt: number;
   } | null>(null);
   const translationCandidatesRef = useRef(
     new Map<string, Partial<Record<TargetLanguage, string>>>(),
+  );
+  const pendingTranslationsRef = useRef(
+    new Map<TargetLanguage, PendingTranslation>(),
   );
   const translationClockOffsetsRef = useRef(new Map<TargetLanguage, number>());
 
@@ -101,14 +116,14 @@ export function useConversationSession() {
     }
 
     const pendingFinalization = pendingFinalizationLatencyRef.current;
-    if (
-      pendingFinalization &&
-      rows.some((row) => (
-        row.sequence === pendingFinalization.sequence && row.status === "final"
+    const finalizedRow = pendingFinalization
+      ? rows.find((row) => (
+        row.id === pendingFinalization.rowId && row.status === "final"
       ))
-    ) {
+      : undefined;
+    if (pendingFinalization && finalizedRow) {
       recordBrowserLatency(
-        pendingFinalization.sequence,
+        finalizedRow.sequence,
         "silence-to-row-final",
         pendingFinalization.startedAt,
       );
@@ -156,58 +171,175 @@ export function useConversationSession() {
     silenceStartedAtRef.current = null;
   }, []);
 
-  const ensureActiveRow = useCallback((elapsedMs: number) => {
-    if (activeRowIdRef.current) {
-      const speechStartedAt = speechStartedAtRef.current;
-      if (speechStartedAt !== null) {
-        speechStartedAtByRowRef.current.set(activeRowIdRef.current, speechStartedAt);
-      }
-      return activeRowIdRef.current;
+  const updateRows = useCallback((
+    update: (current: Utterance[]) => Utterance[],
+  ) => {
+    const next = update(rowsRef.current);
+    if (next === rowsRef.current) return;
+    rowsRef.current = next;
+    setRows(next);
+  }, []);
+
+  const clearEmptyRowCleanup = useCallback((rowId: string) => {
+    const timer = emptyRowCleanupTimersRef.current.get(rowId);
+    if (timer !== undefined) window.clearTimeout(timer);
+    emptyRowCleanupTimersRef.current.delete(rowId);
+  }, []);
+
+  const discardEmptyRow = useCallback((rowId: string) => {
+    const row = rowsRef.current.find((candidate) => candidate.id === rowId);
+    if (!row || row.sourceText?.trim()) return;
+
+    clearEmptyRowCleanup(rowId);
+    const itemId = transcriptionRowItemsRef.current.get(rowId);
+    if (itemId) transcriptionItemRowsRef.current.delete(itemId);
+    transcriptionRowItemsRef.current.delete(rowId);
+    unboundTranscriptionRowsRef.current = unboundTranscriptionRowsRef.current
+      .filter((candidate) => candidate !== rowId);
+    committedTranscriptionRowsRef.current.delete(rowId);
+    translationCandidatesRef.current.delete(rowId);
+    speechStartedAtByRowRef.current.delete(rowId);
+    sourceDisplayMeasuredRowsRef.current.delete(rowId);
+    translationDisplayMeasuredRowsRef.current.delete(rowId);
+
+    if (activeRowIdRef.current === rowId) {
+      activeRowIdRef.current = null;
+      activeSourceTextRef.current = "";
     }
+
+    updateRows((current) => {
+      const next = current
+        .filter((candidate) => candidate.id !== rowId)
+        .map((candidate, index) => (
+          candidate.sequence === index + 1
+            ? candidate
+            : { ...candidate, sequence: index + 1 }
+        ));
+      return next;
+    });
+  }, [clearEmptyRowCleanup, updateRows]);
+
+  const scheduleEmptyRowCleanup = useCallback((rowId: string) => {
+    clearEmptyRowCleanup(rowId);
+    const timer = window.setTimeout(
+      () => discardEmptyRow(rowId),
+      EMPTY_ROW_CLEANUP_MS,
+    );
+    emptyRowCleanupTimersRef.current.set(rowId, timer);
+  }, [clearEmptyRowCleanup, discardEmptyRow]);
+
+  const finalizeRow = useCallback((rowId: string) => {
+    const rowHasSource = Boolean(
+      rowsRef.current.find((row) => row.id === rowId)?.sourceText?.trim(),
+    );
+    if (rowHasSource) clearEmptyRowCleanup(rowId);
+    updateRows((current) => {
+      const index = current.findIndex((row) => row.id === rowId);
+      if (index < 0 || current[index].status === "final") return current;
+      return replaceRow(current, index, {
+        ...current[index],
+        status: "final",
+      });
+    });
+
+    if (activeRowIdRef.current !== rowId) return;
+    if (finalizeTimerRef.current) window.clearTimeout(finalizeTimerRef.current);
+    finalizeTimerRef.current = null;
+    activeRowIdRef.current = null;
+    activeSourceTextRef.current = "";
+    speechStartedAtRef.current = null;
+    silenceStartedAtRef.current = null;
+  }, [clearEmptyRowCleanup, updateRows]);
+
+  const createActiveRow = useCallback((elapsedMs: number) => {
     const sequence = (rowsRef.current.at(-1)?.sequence ?? 0) + 1;
     const row = createLiveUtterance(
       sequence,
       elapsedMs,
-      `live-${sessionStartedAtRef.current}-${sequence}`,
+      `live-${sessionStartedAtRef.current}-${++rowIdCounterRef.current}`,
     );
     activeRowIdRef.current = row.id;
-    activeRowSequenceRef.current = row.sequence;
     const speechStartedAt = speechStartedAtRef.current;
     if (speechStartedAt !== null) {
       speechStartedAtByRowRef.current.set(row.id, speechStartedAt);
     }
-    rowsRef.current = [...rowsRef.current, row];
-    setRows((current) => (
-      current.some((candidate) => candidate.id === row.id)
-        ? current
-        : [...current, row]
-    ));
-    return row.id;
-  }, []);
 
-  const finalizeCurrentRow = useCallback(() => {
-    const activeId = activeRowIdRef.current;
-    if (!activeId) return;
-    if (finalizeTimerRef.current) window.clearTimeout(finalizeTimerRef.current);
-    finalizeTimerRef.current = null;
-    setRows((current) => current.map((row) => (
-      row.id === activeId ? { ...row, status: "final" as const } : row
-    )));
-    activeRowIdRef.current = null;
-    activeRowSequenceRef.current = null;
-    activeSourceTextRef.current = "";
-    speechStartedAtRef.current = null;
-    silenceStartedAtRef.current = null;
+    const pendingCandidates: Partial<Record<TargetLanguage, string>> = {};
+    for (const [targetLanguage, pending] of pendingTranslationsRef.current) {
+      if (Math.abs(pending.elapsedMs - elapsedMs) <= PENDING_TRANSLATION_MAX_AGE_MS) {
+        pendingCandidates[targetLanguage] = pending.text;
+      }
+    }
+    pendingTranslationsRef.current.clear();
+    if (Object.keys(pendingCandidates).length > 0) {
+      translationCandidatesRef.current.set(row.id, pendingCandidates);
+    }
+
+    updateRows((current) => [...current, row]);
+    unboundTranscriptionRowsRef.current.push(row.id);
+    scheduleEmptyRowCleanup(row.id);
+    return row.id;
+  }, [scheduleEmptyRowCleanup, updateRows]);
+
+  const ensureTranscriptionRow = useCallback((
+    itemId: string | undefined,
+    elapsedMs: number,
+  ) => {
+    const reusableRowId = findReusableTranscriptionRow(
+      itemId,
+      transcriptionItemRowsRef.current,
+      transcriptionRowItemsRef.current,
+      activeRowIdRef.current,
+      unboundTranscriptionRowsRef.current,
+    );
+    if (reusableRowId) {
+      if (itemId && !transcriptionRowItemsRef.current.has(reusableRowId)) {
+        transcriptionItemRowsRef.current.set(itemId, reusableRowId);
+        transcriptionRowItemsRef.current.set(reusableRowId, itemId);
+        unboundTranscriptionRowsRef.current = unboundTranscriptionRowsRef.current
+          .filter((candidate) => candidate !== reusableRowId);
+      }
+      return reusableRowId;
+    }
+
+    const previousActiveRowId = activeRowIdRef.current;
+    if (previousActiveRowId) finalizeRow(previousActiveRowId);
+    const rowId = createActiveRow(elapsedMs);
+    if (itemId) {
+      transcriptionItemRowsRef.current.set(itemId, rowId);
+      transcriptionRowItemsRef.current.set(rowId, itemId);
+      unboundTranscriptionRowsRef.current = unboundTranscriptionRowsRef.current
+        .filter((candidate) => candidate !== rowId);
+    }
+    return rowId;
+  }, [createActiveRow, finalizeRow]);
+
+  const commitTranscriptionRow = useCallback((rowId: string) => {
+    if (committedTranscriptionRowsRef.current.has(rowId)) return;
+    if (transcriptionConnectionRef.current?.commit()) {
+      committedTranscriptionRowsRef.current.add(rowId);
+    }
   }, []);
 
   const getActiveSourceText = useCallback(() => activeSourceTextRef.current, []);
   const handleVadSpeechStart = useCallback((at: number) => {
+    const previousActiveRowId = activeRowIdRef.current;
+    if (previousActiveRowId) {
+      commitTranscriptionRow(previousActiveRowId);
+      finalizeRow(previousActiveRowId);
+    }
     beginSpeechMeasurement(at);
     const elapsedMs = Math.max(0, Date.now() - sessionStartedAtRef.current);
-    ensureActiveRow(elapsedMs);
+    createActiveRow(elapsedMs);
     lastSourceLanguageRef.current = "unknown";
     queueMicrotask(syncAudioOutputs);
-  }, [beginSpeechMeasurement, ensureActiveRow, syncAudioOutputs]);
+  }, [
+    beginSpeechMeasurement,
+    commitTranscriptionRow,
+    createActiveRow,
+    finalizeRow,
+    syncAudioOutputs,
+  ]);
   const handleVadSilenceStart = useCallback((at: number) => {
     silenceStartedAtRef.current = at;
   }, []);
@@ -215,13 +347,16 @@ export function useConversationSession() {
     silenceStartedAtRef.current = null;
   }, []);
   const handleVadSpeechEnd = useCallback(() => {
-    const sequence = activeRowSequenceRef.current;
+    const rowId = activeRowIdRef.current;
     const startedAt = silenceStartedAtRef.current;
-    if (sequence !== null && startedAt !== null) {
-      pendingFinalizationLatencyRef.current = { sequence, startedAt };
+    if (rowId && startedAt !== null) {
+      pendingFinalizationLatencyRef.current = { rowId, startedAt };
     }
-    finalizeCurrentRow();
-  }, [finalizeCurrentRow]);
+    if (rowId) {
+      commitTranscriptionRow(rowId);
+      finalizeRow(rowId);
+    }
+  }, [commitTranscriptionRow, finalizeRow]);
 
   const {
     markSpeechDetected,
@@ -255,49 +390,41 @@ export function useConversationSession() {
     sourceStreamRef.current = null;
     if (finalizeTimerRef.current) window.clearTimeout(finalizeTimerRef.current);
     finalizeTimerRef.current = null;
+    for (const timer of emptyRowCleanupTimersRef.current.values()) {
+      window.clearTimeout(timer);
+    }
+    emptyRowCleanupTimersRef.current.clear();
   }, [closeTranslationConnections, stopLocalVad]);
 
   const failSession = useCallback((message: string) => {
+    for (const row of [...rowsRef.current]) {
+      if (!row.sourceText?.trim()) discardEmptyRow(row.id);
+    }
     closeRealtimeResources();
     setErrorMessage(message);
     setConnectionStatus("error");
     setIsListening(false);
-  }, [closeRealtimeResources]);
+  }, [closeRealtimeResources, discardEmptyRow]);
 
   const handleTranscriptionText = useCallback((
     event: TranscriptionEvent,
     replaceWithCompletedTranscript: boolean,
   ) => {
-    const text = replaceWithCompletedTranscript ? event.transcript : event.delta;
-    if (!text) return;
+    const text = (replaceWithCompletedTranscript ? event.transcript : event.delta) ?? "";
+    if (!text && !replaceWithCompletedTranscript) return;
 
     const elapsedMs = Math.max(0, Date.now() - sessionStartedAtRef.current);
-    let rowId = event.item_id
-      ? transcriptionItemRowsRef.current.get(event.item_id)
-      : undefined;
-    rowId ??= activeRowIdRef.current ?? undefined;
-    if (!rowId) {
-      const latest = rowsRef.current.at(-1);
-      const latestTime = latest?.endMs ?? latest?.startMs ?? 0;
-      if (
-        latest &&
-        !latest.sourceText &&
-        elapsedMs - latestTime <= RECENT_EMPTY_ROW_REUSE_MS
-      ) {
-        rowId = latest.id;
-      }
-    }
-    if (!rowId) {
-      if (speechStartedAtRef.current === null) {
-        beginSpeechMeasurement(performance.now());
-      }
-      rowId = ensureActiveRow(elapsedMs);
-      if (event.item_id) transcriptionItemRowsRef.current.set(event.item_id, rowId);
+    const measurementStartedAt = speechStartedAtRef.current ?? performance.now();
+    const rowId = ensureTranscriptionRow(event.item_id, elapsedMs);
+    speechStartedAtRef.current = measurementStartedAt;
+    if (!speechStartedAtByRowRef.current.has(rowId)) {
+      speechStartedAtByRowRef.current.set(rowId, measurementStartedAt);
     }
 
     const isActiveRow = rowId === activeRowIdRef.current;
     if (!replaceWithCompletedTranscript && isActiveRow) markSpeechDetected();
-    setRows((current) => {
+    clearEmptyRowCleanup(rowId);
+    updateRows((current) => {
       const index = current.findIndex((row) => row.id === rowId);
       if (index < 0) return current;
       const row = current[index];
@@ -331,35 +458,47 @@ export function useConversationSession() {
         sourceText,
         sourceLanguage,
         endMs: Math.max(row.endMs ?? 0, elapsedMs),
-        status: row.id === activeRowIdRef.current ? "draft" : row.status,
         ja,
         en,
       });
     });
 
-    if (isActiveRow) {
+    if (replaceWithCompletedTranscript) {
+      if (text.trim()) {
+        finalizeRow(rowId);
+      } else {
+        discardEmptyRow(rowId);
+      }
+    } else if (isActiveRow) {
       if (finalizeTimerRef.current) window.clearTimeout(finalizeTimerRef.current);
       finalizeTimerRef.current = window.setTimeout(
-        finalizeCurrentRow,
+        () => {
+          commitTranscriptionRow(rowId);
+          finalizeRow(rowId);
+        },
         FALLBACK_FINALIZE_MS,
       );
     }
   }, [
-    beginSpeechMeasurement,
-    ensureActiveRow,
-    finalizeCurrentRow,
+    clearEmptyRowCleanup,
+    commitTranscriptionRow,
+    discardEmptyRow,
+    ensureTranscriptionRow,
+    finalizeRow,
     markSpeechDetected,
     syncAudioOutputs,
+    updateRows,
   ]);
 
   const handleTranscriptionEvent = useCallback((event: TranscriptionEvent) => {
     if (event.type === "input_audio_buffer.speech_started") {
-      if (speechStartedAtRef.current === null) {
-        beginSpeechMeasurement(performance.now());
-      }
-      const elapsedMs = Math.max(0, Date.now() - sessionStartedAtRef.current);
-      const rowId = ensureActiveRow(elapsedMs);
-      if (event.item_id) transcriptionItemRowsRef.current.set(event.item_id, rowId);
+      const measurementStartedAt = speechStartedAtRef.current ?? performance.now();
+      const elapsedMs = typeof event.audio_start_ms === "number"
+        ? event.audio_start_ms + transcriptionClockOffsetRef.current
+        : Math.max(0, Date.now() - sessionStartedAtRef.current);
+      const rowId = ensureTranscriptionRow(event.item_id, elapsedMs);
+      speechStartedAtRef.current = measurementStartedAt;
+      speechStartedAtByRowRef.current.set(rowId, measurementStartedAt);
       lastSourceLanguageRef.current = "unknown";
       queueMicrotask(syncAudioOutputs);
       markSpeechDetected();
@@ -375,8 +514,7 @@ export function useConversationSession() {
       );
     }
   }, [
-    beginSpeechMeasurement,
-    ensureActiveRow,
+    ensureTranscriptionRow,
     failSession,
     handleTranscriptionText,
     markSpeechDetected,
@@ -393,27 +531,24 @@ export function useConversationSession() {
       ? event.elapsed_ms + (translationClockOffsetsRef.current.get(targetLanguage) ?? 0)
       : fallbackElapsedMs;
 
-    const latest = rowsRef.current.at(-1);
-    const latestEndMs = latest?.endMs ?? latest?.startMs ?? 0;
-    if (
-      !activeRowIdRef.current &&
-      (!latest || elapsedMs > latestEndMs + 700)
-    ) {
-      if (speechStartedAtRef.current === null) {
-        beginSpeechMeasurement(performance.now());
+    updateRows((current) => {
+      const index = findTranslationRowIndex(
+        current,
+        activeRowIdRef.current,
+        elapsedMs,
+      );
+      if (index < 0) {
+        const pending = pendingTranslationsRef.current.get(targetLanguage);
+        pendingTranslationsRef.current.set(targetLanguage, {
+          elapsedMs,
+          text: `${
+            pending && elapsedMs - pending.elapsedMs <= PENDING_TRANSLATION_MAX_AGE_MS
+              ? pending.text
+              : ""
+          }${event.delta}`,
+        });
+        return current;
       }
-      ensureActiveRow(elapsedMs);
-      lastSourceLanguageRef.current = "unknown";
-      queueMicrotask(syncAudioOutputs);
-    }
-
-    setRows((current) => {
-      if (current.length === 0) return current;
-      let index = findLastRowStartingAtOrBefore(current, elapsedMs + 400);
-      if (index < 0 && activeRowIdRef.current) {
-        index = current.findIndex((row) => row.id === activeRowIdRef.current);
-      }
-      if (index < 0) index = current.length - 1;
 
       const row = current[index];
       const candidates = translationCandidatesRef.current.get(row.id) ?? {};
@@ -436,7 +571,7 @@ export function useConversationSession() {
         [targetLanguage]: translatedText,
       });
     });
-  }, [beginSpeechMeasurement, ensureActiveRow, syncAudioOutputs]);
+  }, [updateRows]);
 
   const handleTranslationEvent = useCallback((
     targetLanguage: TargetLanguage,
@@ -513,9 +648,14 @@ export function useConversationSession() {
     setRows([]);
     rowsRef.current = [];
     activeRowIdRef.current = null;
-    activeRowSequenceRef.current = null;
+    rowIdCounterRef.current = 0;
     transcriptionItemRowsRef.current.clear();
+    transcriptionRowItemsRef.current.clear();
+    unboundTranscriptionRowsRef.current = [];
+    committedTranscriptionRowsRef.current.clear();
+    transcriptionClockOffsetRef.current = 0;
     translationCandidatesRef.current.clear();
+    pendingTranslationsRef.current.clear();
     translationClockOffsetsRef.current.clear();
     lastSourceLanguageRef.current = "unknown";
     activeSourceTextRef.current = "";
@@ -545,6 +685,10 @@ export function useConversationSession() {
       sourceStreamRef.current = sourceStream;
       startLocalVad(sourceStream);
 
+      transcriptionClockOffsetRef.current = Math.max(
+        0,
+        Date.now() - sessionStartedAtRef.current,
+      );
       const transcriptionPromise = connectTranscription({
         sourceStream,
         signal: startAbortController.signal,
@@ -579,7 +723,17 @@ export function useConversationSession() {
   };
 
   const stopConversation = () => {
-    finalizeCurrentRow();
+    const activeRowId = activeRowIdRef.current;
+    if (activeRowId) {
+      const activeRow = rowsRef.current.find((row) => row.id === activeRowId);
+      if (activeRow?.sourceText?.trim()) {
+        commitTranscriptionRow(activeRowId);
+        finalizeRow(activeRowId);
+      }
+    }
+    for (const row of [...rowsRef.current]) {
+      if (!row.sourceText?.trim()) discardEmptyRow(row.id);
+    }
     closeRealtimeResources();
     setIsListening(false);
     setConnectionStatus("idle");

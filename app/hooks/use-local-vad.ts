@@ -1,7 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef } from "react";
-import { getVadSilenceDurationMs } from "@/lib/local-vad";
+import {
+  getVadSilenceDurationMs,
+  SPEECH_CONFIRMATION_MS,
+} from "@/lib/local-vad";
 
 const VAD_MIN_RMS = 0.012;
 const VAD_NOISE_MULTIPLIER = 2.5;
@@ -24,6 +27,7 @@ export function useLocalVad({
   const audioContextRef = useRef<AudioContext | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const speechDetectedRef = useRef(false);
+  const speechCandidateStartedAtRef = useRef<number | null>(null);
   const silenceStartedAtRef = useRef<number | null>(null);
   const noiseFloorRef = useRef(0.01);
   const callbacksRef = useRef({
@@ -57,6 +61,7 @@ export function useLocalVad({
     }
 
     speechDetectedRef.current = false;
+    speechCandidateStartedAtRef.current = null;
     silenceStartedAtRef.current = null;
     noiseFloorRef.current = 0.01;
   }, []);
@@ -86,13 +91,20 @@ export function useLocalVad({
 
       if (rms >= speechThreshold) {
         if (!speechDetectedRef.current) {
-          callbacksRef.current.onSpeechStart(now);
+          speechCandidateStartedAtRef.current ??= now;
+          if (
+            now - speechCandidateStartedAtRef.current >= SPEECH_CONFIRMATION_MS
+          ) {
+            callbacksRef.current.onSpeechStart(speechCandidateStartedAtRef.current);
+            speechDetectedRef.current = true;
+            speechCandidateStartedAtRef.current = null;
+          }
         } else if (silenceStartedAtRef.current !== null) {
           callbacksRef.current.onSilenceCancel();
         }
-        speechDetectedRef.current = true;
         silenceStartedAtRef.current = null;
       } else {
+        speechCandidateStartedAtRef.current = null;
         noiseFloorRef.current += (rms - noiseFloorRef.current) * 0.05;
         if (speechDetectedRef.current) {
           if (silenceStartedAtRef.current === null) {
@@ -118,6 +130,7 @@ export function useLocalVad({
 
   const markSpeechDetected = useCallback(() => {
     speechDetectedRef.current = true;
+    speechCandidateStartedAtRef.current = null;
   }, []);
 
   useEffect(() => () => stopLocalVad(), [stopLocalVad]);

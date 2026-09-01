@@ -54,6 +54,7 @@ export async function POST() {
               delay: getTranscriptionDelay(),
             },
             noise_reduction: { type: "far_field" },
+            turn_detection: null,
           },
         },
       },

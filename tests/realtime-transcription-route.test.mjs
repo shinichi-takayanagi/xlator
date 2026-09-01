@@ -49,6 +49,7 @@ test("creates a low-delay bilingual transcription secret", async () => {
     delay: "low",
   });
   assert.equal(body.session.audio.input.noise_reduction.type, "far_field");
+  assert.equal(body.session.audio.input.turn_detection, null);
 });
 
 test("falls back to minimal transcription delay for unsupported values", async () => {

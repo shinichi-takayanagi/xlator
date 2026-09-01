@@ -2,6 +2,9 @@ import type { TargetLanguage, Utterance } from "./translation-types";
 
 export type TranslationCandidates = Partial<Record<TargetLanguage, string>>;
 
+const TRANSLATION_ROW_LOOKAHEAD_MS = 250;
+const TRANSLATION_ROW_STALE_MS = 3_000;
+
 export function createLiveUtterance(
   sequence: number,
   elapsedMs: number,
@@ -40,6 +43,57 @@ export function findLastRowStartingAtOrBefore(
   }
 
   return -1;
+}
+
+export function findReusableTranscriptionRow(
+  itemId: string | undefined,
+  itemRows: ReadonlyMap<string, string>,
+  rowItems: ReadonlyMap<string, string>,
+  activeRowId: string | null,
+  unboundRowIds: readonly string[] = [],
+) {
+  if (itemId) {
+    const mappedRowId = itemRows.get(itemId);
+    if (mappedRowId) return mappedRowId;
+
+    const queuedRowId = unboundRowIds.find((rowId) => !rowItems.has(rowId));
+    if (queuedRowId) return queuedRowId;
+  }
+
+  if (!activeRowId) return null;
+  const activeItemId = rowItems.get(activeRowId);
+  if (!itemId || !activeItemId || activeItemId === itemId) return activeRowId;
+  return null;
+}
+
+export function findTranslationRowIndex(
+  rows: Utterance[],
+  activeRowId: string | null,
+  elapsedMs?: number,
+) {
+  if (rows.length === 0) return -1;
+
+  const activeIndex = activeRowId
+    ? rows.findIndex((row) => row.id === activeRowId)
+    : -1;
+  if (activeIndex >= 0 || elapsedMs === undefined) return activeIndex;
+
+  const timedIndex = findLastRowStartingAtOrBefore(
+    rows,
+    elapsedMs + TRANSLATION_ROW_LOOKAHEAD_MS,
+  );
+  if (timedIndex < 0) return activeIndex;
+
+  const timedRow = rows[timedIndex];
+  const timedEndMs = timedRow.endMs ?? timedRow.startMs ?? 0;
+  if (
+    timedIndex === rows.length - 1 &&
+    timedIndex !== activeIndex &&
+    elapsedMs > timedEndMs + TRANSLATION_ROW_STALE_MS
+  ) {
+    return -1;
+  }
+  return timedIndex;
 }
 
 export function appendTranslationCandidate(
