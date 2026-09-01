@@ -7,6 +7,7 @@ import {
 export type TranscriptionEvent = {
   type: string;
   item_id?: string;
+  audio_start_ms?: number;
   delta?: string;
   transcript?: string;
   error?: { message?: string };
@@ -14,6 +15,7 @@ export type TranscriptionEvent = {
 
 export type TranscriptionConnection = {
   close: () => void;
+  commit: () => boolean;
 };
 
 type ConnectOptions = {
@@ -113,7 +115,8 @@ export async function connectTranscription({
   const events = peerConnection.createDataChannel("oai-events");
   events.onmessage = ({ data }) => {
     try {
-      onEvent(JSON.parse(String(data)) as TranscriptionEvent);
+      const event = JSON.parse(String(data)) as TranscriptionEvent;
+      onEvent(event);
     } catch {
       // Ignore malformed or unknown data channel messages.
     }
@@ -169,5 +172,16 @@ export async function connectTranscription({
     throw error;
   }
 
-  return { close };
+  return {
+    close,
+    commit() {
+      if (closed || events.readyState !== "open") return false;
+      try {
+        events.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  };
 }

@@ -6,10 +6,12 @@ import {
   createLiveUtterance,
   detectLanguage,
   findLastRowStartingAtOrBefore,
+  findReusableTranscriptionRow,
+  findTranslationRowIndex,
   replaceRow,
 } from "../lib/utterance-alignment.ts";
 
-test("creates a draft aligned row as soon as speech starts", () => {
+test("creates a draft aligned row for a confirmed speech event", () => {
   assert.deepEqual(createLiveUtterance(3, 65_432, "live-test-3"), {
     id: "live-test-3",
     sequence: 3,
@@ -61,4 +63,45 @@ test("locates and immutably replaces an aligned utterance", () => {
   assert.notEqual(next, rows);
   assert.equal(next[0], rows[0]);
   assert.equal(next[1], replacement);
+});
+
+test("never reuses a row already bound to a different transcription item", () => {
+  const itemRows = new Map([["item-1", "row-1"]]);
+  const rowItems = new Map([["row-1", "item-1"]]);
+
+  assert.equal(
+    findReusableTranscriptionRow("item-1", itemRows, rowItems, "row-1"),
+    "row-1",
+  );
+  assert.equal(
+    findReusableTranscriptionRow("item-2", itemRows, rowItems, "row-1"),
+    null,
+  );
+  assert.equal(
+    findReusableTranscriptionRow("item-2", itemRows, rowItems, null),
+    null,
+  );
+  assert.equal(
+    findReusableTranscriptionRow(
+      "item-2",
+      itemRows,
+      rowItems,
+      "row-2",
+      ["row-1-finished", "row-2"],
+    ),
+    "row-1-finished",
+  );
+});
+
+test("assigns translation only to an existing current row", () => {
+  const rows = [
+    { id: "row-1", sequence: 1, at: "00:01", sourceLanguage: "ja", startMs: 1_000, endMs: 2_000, ja: "一", en: "one", status: "final" },
+    { id: "row-2", sequence: 2, at: "00:04", sourceLanguage: "en", startMs: 4_000, endMs: 4_500, ja: "二", en: "two", status: "draft" },
+  ];
+
+  assert.equal(findTranslationRowIndex([], null, 1_000), -1);
+  assert.equal(findTranslationRowIndex(rows, "row-2"), 1);
+  assert.equal(findTranslationRowIndex(rows, "row-2", 1_500), 1);
+  assert.equal(findTranslationRowIndex(rows, "row-2", 4_100), 1);
+  assert.equal(findTranslationRowIndex(rows, null, 8_000), -1);
 });
