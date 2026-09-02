@@ -13,6 +13,14 @@ const AUDIO_MODES: { id: AudioMode; label: string }[] = [
   { id: "auto", label: "自動" },
 ];
 
+const DOWNLOAD_OPTIONS: { format: DownloadFormat; description: string }[] = [
+  { format: "txt", description: "読みやすいログ" },
+  { format: "md", description: "Markdown表" },
+  { format: "csv", description: "構造化データ" },
+  { format: "json", description: "構造化データ" },
+  { format: "srt", description: "字幕データ" },
+];
+
 function formatElapsed(seconds: number) {
   const minutes = Math.floor(seconds / 60).toString().padStart(2, "0");
   const remainder = (seconds % 60).toString().padStart(2, "0");
@@ -123,16 +131,10 @@ export function ConversationControls({
         </button>
         {downloadOpen && (
           <div className="download-menu">
-            {(["txt", "csv", "json", "srt"] as const).map((format) => (
+            {DOWNLOAD_OPTIONS.map(({ format, description }) => (
               <button key={format} onClick={() => download(format)}>
                 <span>.{format}</span>
-                <small>
-                  {format === "txt"
-                    ? "読みやすいログ"
-                    : format === "srt"
-                      ? "字幕データ"
-                      : "構造化データ"}
-                </small>
+                <small>{description}</small>
               </button>
             ))}
           </div>

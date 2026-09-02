@@ -220,6 +220,7 @@ Always play only the translation, which is the language opposite the source lang
 Generate files in the browser from the current aligned records. Do not use server-side persistence or an export API. Use the filename `xlator-log.{format}`.
 
 - TXT: Export the Japanese and English logs under separate headings.
+- Markdown: Export sequence number, time, source language, Japanese, and English as one aligned table. Escape table delimiters, HTML-sensitive characters, backslashes, and line breaks inside cells.
 - CSV: Export sequence number, time, source language, Japanese, and English.
 - JSON: Export `Utterance[]`.
 - SRT: For live data, use `startMs` from local speech detection and `endMs` from the local session time when the latest transcription delta or completion arrives, and include both languages in one subtitle. These are application timings, not exact word or physical-speech timestamps. For initial sample data, use synthetic timestamps at four-second intervals.
@@ -265,7 +266,8 @@ CI does not reproduce a physical microphone. Before a release, manually verify b
 | --- | --- | --- | --- |
 | Dual Realtime browser path | Dedicated `gpt-live-transcribe` source transcription plus English-target and Japanese-target `gpt-realtime-translate` text/audio sessions are implemented; locally committed rows, unique `item_id` binding, and target-language candidate buffering preserve alignment | Production build and automated route, item-binding, row-selection, candidate-buffering, alignment, and connection utility tests pass. On 2026-09-02, one browser session received the registered Japanese fixture followed by the English fixture through the microphone: the Japanese greeting and weather sentence occupied two aligned rows, the English sentence occupied a third aligned row, and every source/translation pair used the same row number. A transient empty row disappeared after five seconds and no empty row remained after stopping. | Browser text alignment and empty-row cleanup are verified with the two basic real-audio fixtures; translated-audio playback, natural alternating conversation, and representative latency remain pending |
 | Live API sanity | The server can create transcription and Translation client secrets | On 2026-09-01, both secret request types returned 200. One real-audio transcription run per direction succeeded with `minimal` delay and `languages: ["en", "ja"]`: Japanese first delta 3,186 ms and English 2,387 ms. | API components verified individually; the new three-session browser composition is not verified |
-| Normal CI | GitHub Actions runs `npm run verify` | Lint, type checking, build, and 33 tests pass locally on the current change branch | Required pull request quality gate |
+| Normal CI | GitHub Actions runs `npm run verify` | Lint, type checking, build, and 34 tests pass locally on the current change branch | Required pull request quality gate |
+| Browser downloads | TXT, Markdown, CSV, JSON, and SRT exports are implemented from the current aligned rows | Unit tests cover the Markdown table structure, row alignment, MIME type, and escaping as well as the existing formats | Browser-generated exports are verified without server persistence |
 | Live-API smoke CLI | WAV conversion, WebSocket streaming, CER/WER, translation terms, translated audio, repeated runs, p50/p95 summaries, latency comparison, and clean closure checks are implemented | On 2026-09-01, both registered cases ran ten times locally. On 2026-09-02, one regression run per direction again returned source text, translation text, translated audio, and clean session closure. The command exited nonzero on translation error-rate and required-term assertions; the English-to-Japanese output omitted the required greeting. | Covers the same Translation model and output events as the browser, but uses the Translation session's optional input transcript instead of the browser's dedicated transcription session |
 | Real-audio fixture | Japanese-to-English and English-to-Japanese real-speech WAV files and reference data are registered | The local `--validate-only` check passes, and both files were processed successfully in ten live runs per direction | Human confirmation of the Japanese reference is pending because all ten live transcripts included `とても`, which is absent from the current reference; mixed-language, numbers, dates, times, and proper-noun coverage remains incomplete |
 | Browser latency diagnostics | Speech-to-source-display, speech-to-translation-display, and silence-to-row-final measurements are implemented without storing transcript content | Pure timing calculations and the production build pass automated verification | Dual Realtime physical-microphone measurements have not been collected |
@@ -337,7 +339,7 @@ app/globals.css                          Layout and styles
 app/api/realtime/transcription/route.ts  Short-lived transcription secret issuance
 app/api/realtime/session/route.ts        Short-lived Translation secret issuance
 lib/demo-utterances.ts                   Initial-screen fixture
-lib/download-log.ts                      TXT / CSV / JSON / SRT generation
+lib/download-log.ts                      TXT / Markdown / CSV / JSON / SRT generation
 lib/browser-latency.ts                   Browser latency measurement records
 lib/local-vad.ts                         Pure VAD silence-duration logic
 lib/realtime-transcription.ts            Realtime transcription WebRTC connection
@@ -370,7 +372,7 @@ Do not keep scaffold code for databases, authentication, sample APIs, or other f
 - Empty rows disappear after five seconds or immediately when the session stops or fails.
 - Realtime Translation output-transcript deltas render only on the side opposite the detected source language.
 - Translated audio plays only in the language opposite the source language.
-- TXT, CSV, JSON, and SRT files can be downloaded.
+- TXT, Markdown, CSV, JSON, and SRT files can be downloaded.
 - Real-audio fixtures can be validated for structure and WAV conversion without an API connection.
 - Repeated live-API runs report p50/p95 first-delta latency summaries.
 - Browser latency records contain timing metadata without transcript content.

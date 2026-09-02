@@ -38,3 +38,18 @@ test("creates readable text and structured JSON", () => {
   const json = JSON.parse(createDownloadContent(rows, "json").content);
   assert.deepEqual(json, rows);
 });
+
+test("creates an aligned Markdown table and escapes cell content", () => {
+  const markdownRows = [{
+    ...rows[0],
+    ja: "こんにちは | <世界>\n続き",
+    en: "Hello | world\ncontinued",
+  }];
+
+  const { content, mime } = createDownloadContent(markdownRows, "md");
+
+  assert.equal(mime, "text/markdown");
+  assert.match(content, /^# xlator conversation log/m);
+  assert.match(content, /\| # \| Time \| Source \| Japanese \| English \|/);
+  assert.match(content, /\| 1 \| 00:01 \| ja \| こんにちは \\\| &lt;世界&gt;<br>続き \| Hello \\\| world<br>continued \|/);
+});

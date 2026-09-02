@@ -1,10 +1,20 @@
 import type { Utterance } from "./translation-types";
 
-export type DownloadFormat = "txt" | "csv" | "json" | "srt";
+export type DownloadFormat = "txt" | "csv" | "json" | "md" | "srt";
 
 function escapeCsv(value: string | number) {
   const text = String(value).replaceAll('"', '""');
   return `"${text}"`;
+}
+
+function escapeMarkdownCell(value: string | number) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\\", "\\\\")
+    .replaceAll("|", "\\|")
+    .replace(/\r\n|\r|\n/g, "<br>");
 }
 
 export function formatSrtTimestamp(milliseconds: number) {
@@ -42,6 +52,23 @@ export function createDownloadContent(rows: Utterance[], format: DownloadFormat)
         return `${index + 1}\n${formatSrtTimestamp(startMs)} --> ${formatSrtTimestamp(endMs)}\n${row.ja}\n${row.en}`;
       }).join("\n\n"),
       mime: "text/plain",
+    };
+  }
+
+  if (format === "md") {
+    return {
+      content: [
+        "# xlator conversation log",
+        "",
+        "| # | Time | Source | Japanese | English |",
+        "| ---: | :--- | :---: | --- | --- |",
+        ...rows.map((row) => {
+          const cells = [row.sequence, row.at, row.sourceLanguage, row.ja, row.en]
+            .map(escapeMarkdownCell);
+          return `| ${cells.join(" | ")} |`;
+        }),
+      ].join("\n"),
+      mime: "text/markdown",
     };
   }
 
