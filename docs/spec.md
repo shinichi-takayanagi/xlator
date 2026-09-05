@@ -3,6 +3,7 @@
 Last updated: 2026-09-06
 Status: Dual Realtime path with acoustic turn finalization, bounded stop draining, and timestamp-first translation routing implemented; automated verification completed; browser and translated-audio field verification pending
 
+
 ## 1. Purpose
 
 Build a local web app that captures a conversation containing both Japanese and English through a shared microphone and displays every utterance in both languages.
@@ -81,7 +82,8 @@ Yep, I'm fine
 - Show the sequence number, start time, `原文` (Source), `翻訳` (Translation), or `処理中` (Processing), and the text in each row.
 - Display unfinished rows with reduced emphasis. A live row stays draft until its acoustic turn has ended and its source transcript has completed; this does not imply that the independent streaming translation is complete.
 - Allow each panel to scroll internally and independently.
-- Scroll immediately to the latest position, without animation, when a new utterance or text delta arrives.
+- Scroll immediately to the latest position, without animation, when a new utterance or visible text delta arrives. Memoize panels and rows by their displayed fields so opposite-panel-only deltas do not rerender or scroll the unchanged panel.
+- Display unclassified source text, including numeric-only utterances, once in the Japanese panel with an explicit language-pending or language-unknown label and no Japanese language attribute. Keep both stored language fields empty until classification succeeds. Provisional language assignments are visibly labeled until the completed source transcript arrives.
 - Show 16 sample utterances on the initial screen for UI verification.
 - Clear the sample data and switch to live rows when a conversation starts.
 - Keep captured live rows visible after the conversation stops. Stop the microphone, local VAD, and translated audio playback immediately, then accept final source and translated text for up to five seconds. The controls return to idle during this bounded drain. Starting again cancels the previous drain and starts a new log.
@@ -110,6 +112,7 @@ type Utterance = {
   sequence: number;
   at: string;
   sourceLanguage: "ja" | "en" | "unknown";
+  sourceLanguageStatus?: "pending" | "provisional" | "final";
   sourceText?: string;
   startMs?: number;
   endMs?: number;
@@ -183,7 +186,7 @@ After the key configuration check succeeds, the browser prefetches the transcrip
 
 Configure the transcription session with automatic turn detection disabled. After all required connections are ready, clear audio accumulated during startup and begin local VAD. Local VAD creates one draft row and commits the input audio buffer after the configured silence interval. Bind each `input_audio_buffer.committed` event's server `item_id` to the oldest unbound local row, then keep later delta and completion events associated through `item_id`. Append each `conversation.item.input_audio_transcription.delta` from the dedicated transcription session to that row. A new `item_id` never reuses a row already bound to another item. A `conversation.item.input_audio_transcription.completed` event replaces the accumulated source text with the final transcript so that model corrections and normalization are preserved. If local VAD misses speech, the first transcription delta creates and binds the row.
 
-Classify text containing Japanese characters as `ja`, text containing Latin characters as `en`, and unclassifiable text as `unknown`. After the source language is known, write the source transcript into that language's field and translate only the opposite field.
+Classify Japanese-only text as `ja`, Latin-only text as `en`, and numeric or otherwise unclassifiable text as `unknown`. For mixed scripts, hiragana takes Japanese precedence; otherwise two or more Latin words with more Latin than Japanese characters indicate English, Japanese character dominance indicates Japanese, and the remaining cases stay unknown. This is a heuristic, not model-based language identification. Recompute provisional classification on source deltas and final classification on the completed transcript. Corrections clear obsolete language fields and mute translated audio when classification returns to unknown. After classification succeeds, write the source transcript into that language's field and translate only the opposite field. The language status is independent of local row finalization.
 
 ### Translation
 
@@ -232,7 +235,8 @@ Always play only the translation, which is the language opposite the source lang
 Generate files in the browser from the current aligned records. Do not use server-side persistence or an export API. Use the filename `xlator-log.{format}`.
 
 - TXT: Export the Japanese and English logs under separate headings.
-- CSV: Export sequence number, time, source language, Japanese, and English.
+- CSV: Export sequence number, time, source language, Japanese, English, and source text.
+- Preserve unclassified source text in JSON, a separate labeled TXT section, and a labeled SRT entry so numeric-only source text is never lost from exports.
 - JSON: Export `Utterance[]`.
 - SRT: For live data, use `startMs` from local speech detection and `endMs` from the local session time when the latest transcription delta or completion arrives, and include both languages in one subtitle. These are application timings, not exact word or physical-speech timestamps. For initial sample data, use synthetic timestamps at four-second intervals.
 
@@ -250,7 +254,8 @@ Generate files in the browser from the current aligned records. Do not use serve
 - Client logic cannot eliminate model processing or network latency.
 - Measure connection startup, first source transcript, first translation, and utterance finalization separately during evaluation.
 - The live-API smoke CLI accepts `--repeat <count>` and reports nearest-rank p50 and p95 values for the first Translation-session source delta, first output-transcript delta, and their difference.
-- In the browser, measure local-VAD speech start to the first rendered source and translation text, plus silence start to the rendered final-row state.
+- In the browser, measure source and selected translation receipt, state adoption, and the actual transcript row layout-effect DOM commit separately. Record speech-to-receipt, receipt-to-adoption, adoption-to-DOM, and speech-to-DOM metrics once per row and source/translation kind. Preserve the original receipt timestamp for buffered translations.
+- Measure silence-to-local-speech-end, silence-to-source-completed, and source-completed-to-DOM separately; local finalization is not source completion. Missing VAD timestamps omit speech metrics instead of fabricating zero latency. DOM commit is not a browser paint measurement.
 - Store browser measurements without transcript content in `window.__xlatorLatency`, dispatch an `xlator:latency` event, and log the same structured record to the developer console.
 
 ## 12. Testing and quality evaluation
@@ -282,7 +287,7 @@ CI does not reproduce a physical microphone. Before a release, manually verify b
 | Normal CI | GitHub Actions runs `npm run verify` | On 2026-09-06, lint, type checking, the production build, and 67 tests passed locally after adding acoustic lifecycle, stop-drain, and translation-alignment regression coverage. On 2026-09-05, `npm audit` reported no known vulnerabilities after the runtime and build-tool maintenance update | Required pull request quality gate |
 | Live-API smoke CLI | WAV conversion, WebSocket streaming, CER/WER, translation terms, translated audio, repeated runs, p50/p95 summaries, latency comparison, and clean closure checks are implemented | On 2026-09-01, both registered cases ran ten times locally. On 2026-09-02, one regression run per direction again returned source text, translation text, translated audio, and clean session closure. The command exited nonzero on translation error-rate and required-term assertions; the English-to-Japanese output omitted the required greeting. | Covers the same Translation model and output events as the browser, but uses the Translation session's optional input transcript instead of the browser's dedicated transcription session |
 | Real-audio fixture | Japanese-to-English and English-to-Japanese real-speech WAV files and reference data are registered | The local `--validate-only` check passes, and both files were processed successfully in ten live runs per direction | Human confirmation of the Japanese reference is pending because all ten live transcripts included `とても`, which is absent from the current reference; mixed-language, numbers, dates, times, and proper-noun coverage remains incomplete |
-| Browser latency diagnostics | Speech-to-source-display, speech-to-translation-display, and silence-to-row-final measurements are implemented without storing transcript content | Pure timing calculations and the production build pass automated verification | Dual Realtime physical-microphone measurements have not been collected |
+| Transcript display and latency diagnostics | Numeric/unclassified source display, provisional mixed-script classification, visible-field memoization, and receipt/adoption/DOM-commit metrics are implemented without storing transcript content | Automated display, alignment, export, and timing tests cover classification corrections, buffered receipt times, and missing VAD timestamps; lint, type checking, production build, and all 44 tests passed locally on 2026-09-06 | Physical-microphone latency and browser paint measurements have not been collected; classification remains heuristic |
 | Manual GitHub Actions workflow | The `workflow_dispatch` `Realtime API Smoke` workflow is implemented | Normal CI passes after adding the workflow; a live GitHub Actions run has not been performed | API key registration and execution from the default branch remain incomplete |
 | Physical microphone verification | Manual procedure is defined in `docs/realtime-smoke.md` | On 2026-09-02, speaker playback of the two basic fixtures through the earlier browser implementation verified muted-mode text alignment and stopping; natural speech and translated-audio playback were not tested, and the audited connection/item-binding changes have not received a new physical-microphone run | Manual pre-release check, not automated CI |
 
@@ -356,6 +361,7 @@ app/api/realtime/session/route.ts        Short-lived Translation secret issuance
 lib/demo-utterances.ts                   Initial-screen fixture
 lib/download-log.ts                      TXT / CSV / JSON / SRT generation
 lib/browser-latency.ts                   Browser latency measurement records
+lib/transcript-display.ts                Visible transcript projection and commit metadata
 lib/local-vad.ts                         Pure VAD silence-duration logic
 lib/realtime-client-secret.ts            Validated short-lived secret responses
 lib/realtime-connection.ts               Shared startup cancellation, deadline, and connection-readiness utilities

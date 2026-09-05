@@ -157,3 +157,20 @@ test("does not look ahead across a turn boundary and uses acoustic rather than s
   const nearby = [rows[0], { ...rows[1], startMs: 4_000 }];
   assert.equal(findTranslationRowIndex(nearby, "B", 3_999), 0);
 });
+
+test("uses mixed-script context instead of treating every Japanese name as Japanese speech", () => {
+  assert.equal(detectLanguage("I work at トヨタ."), "en");
+  assert.equal(detectLanguage("OpenAIを使います"), "ja");
+  assert.equal(detectLanguage("OpenAI 東京"), "unknown");
+  assert.equal(detectLanguage("123"), "unknown");
+});
+
+test("source language corrections clear obsolete source and target fields", () => {
+  const row = { ...createLiveUtterance(1, 0), sourceLanguage: "en", sourceText: "OpenAI", en: "OpenAI", ja: "オープンAI" };
+  assert.deepEqual(alignSourceAndTranslation(row, "OpenAIを使います", "ja", { en: "I use OpenAI" }), {
+    ja: "OpenAIを使います", en: "I use OpenAI",
+  });
+  assert.deepEqual(alignSourceAndTranslation(row, "123", "unknown", { en: "one two three", ja: "一二三" }), {
+    ja: "", en: "",
+  });
+});

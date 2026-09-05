@@ -27,8 +27,8 @@ export default function Home() {
         />
 
         <div className="log-stack">
-          <TranscriptPanel language="ja" rows={session.rows} />
-          <TranscriptPanel language="en" rows={session.rows} />
+          <TranscriptPanel language="ja" rows={session.rows} onCommit={session.onTranscriptCommit} />
+          <TranscriptPanel language="en" rows={session.rows} onCommit={session.onTranscriptCommit} />
         </div>
 
         <SessionErrorToast

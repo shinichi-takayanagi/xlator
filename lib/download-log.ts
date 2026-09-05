@@ -27,8 +27,8 @@ export function createDownloadContent(rows: Utterance[], format: DownloadFormat)
   if (format === "csv") {
     return {
       content: [
-        ["sequence", "time", "source_language", "japanese", "english"].map(escapeCsv).join(","),
-        ...rows.map((row) => [row.sequence, row.at, row.sourceLanguage, row.ja, row.en].map(escapeCsv).join(",")),
+        ["sequence", "time", "source_language", "japanese", "english", "source_text"].map(escapeCsv).join(","),
+        ...rows.map((row) => [row.sequence, row.at, row.sourceLanguage, row.ja, row.en, row.sourceText ?? ""].map(escapeCsv).join(",")),
       ].join("\n"),
       mime: "text/csv",
     };
@@ -39,14 +39,20 @@ export function createDownloadContent(rows: Utterance[], format: DownloadFormat)
       content: rows.map((row, index) => {
         const startMs = row.startMs ?? index * 4000;
         const endMs = Math.max(startMs + 500, row.endMs ?? startMs + 3500);
-        return `${index + 1}\n${formatSrtTimestamp(startMs)} --> ${formatSrtTimestamp(endMs)}\n${row.ja}\n${row.en}`;
+        const text = row.sourceLanguage === "unknown" && row.sourceText?.trim()
+          ? `[言語不明] ${row.sourceText}` : `${row.ja}\n${row.en}`;
+        return `${index + 1}\n${formatSrtTimestamp(startMs)} --> ${formatSrtTimestamp(endMs)}\n${text}`;
       }).join("\n\n"),
       mime: "text/plain",
     };
   }
 
+  const unknownSources = rows.filter((row) => row.sourceLanguage === "unknown" && row.sourceText?.trim());
+  const unknownSection = unknownSources.length
+    ? `\n\n## 言語不明の原文\n${unknownSources.map((row) => `[${row.sequence} ${row.at}] ${row.sourceText}`).join("\n")}`
+    : "";
   return {
-    content: `## 日本語ログ\n${rows.map((row) => row.ja).join("\n")}\n\n## 英語ログ\n${rows.map((row) => row.en).join("\n")}`,
+    content: `## 日本語ログ\n${rows.map((row) => row.ja).join("\n")}\n\n## 英語ログ\n${rows.map((row) => row.en).join("\n")}${unknownSection}`,
     mime: "text/plain",
   };
 }

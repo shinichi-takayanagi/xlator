@@ -3,9 +3,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocalVad } from "@/app/hooks/use-local-vad";
 import {
-  recordBrowserLatency,
+  createTranscriptLatencyTracker,
   resetBrowserLatencyMeasurements,
 } from "@/lib/browser-latency";
+import { getTranscriptDisplay, type TranscriptCommit } from "@/lib/transcript-display";
 import { DEMO_UTTERANCES } from "@/lib/demo-utterances";
 import {
   CONNECTION_TIMEOUT_MS,
@@ -83,64 +84,17 @@ export function useConversationSession() {
   const playbackRowIdRef = useRef<string | null>(null);
   const audioModeRef = useRef<AudioMode>("off");
   const speechStartedAtRef = useRef<number | null>(null);
-  const speechStartedAtByRowRef = useRef(new Map<string, number>());
   const silenceStartedAtRef = useRef<number | null>(null);
-  const sourceDisplayMeasuredRowsRef = useRef(new Set<string>());
-  const translationDisplayMeasuredRowsRef = useRef(new Set<string>());
-  const pendingFinalizationLatencyRef = useRef<{
-    rowId: string;
-    startedAt: number;
-  } | null>(null);
+  const latencyRef = useRef(createTranscriptLatencyTracker());
   const translationCandidatesRef = useRef(
     new Map<string, Partial<Record<TargetLanguage, string>>>(),
   );
   const pendingTranslationsRef = useRef(new TranslationFragmentBuffer());
   const translationClockOffsetsRef = useRef(new Map<TargetLanguage, number>());
 
-  useEffect(() => {
-    rowsRef.current = rows;
-    for (const row of rows) {
-      const speechStartedAt = speechStartedAtByRowRef.current.get(row.id);
-      if (speechStartedAt === undefined) continue;
-      if (row.sourceText && !sourceDisplayMeasuredRowsRef.current.has(row.id)) {
-        recordBrowserLatency(
-          row.sequence,
-          "speech-to-source-display",
-          speechStartedAt,
-        );
-        sourceDisplayMeasuredRowsRef.current.add(row.id);
-      }
-      if (
-        row.sourceLanguage !== "unknown" &&
-        !translationDisplayMeasuredRowsRef.current.has(row.id)
-      ) {
-        const targetLanguage = row.sourceLanguage === "ja" ? "en" : "ja";
-        if (row[targetLanguage].trim()) {
-          recordBrowserLatency(
-            row.sequence,
-            "speech-to-translation-display",
-            speechStartedAt,
-          );
-          translationDisplayMeasuredRowsRef.current.add(row.id);
-        }
-      }
-    }
-
-    const pendingFinalization = pendingFinalizationLatencyRef.current;
-    const finalizedRow = pendingFinalization
-      ? rows.find((row) => (
-        row.id === pendingFinalization.rowId && row.status === "final"
-      ))
-      : undefined;
-    if (pendingFinalization && finalizedRow) {
-      recordBrowserLatency(
-        finalizedRow.sequence,
-        "silence-to-row-final",
-        pendingFinalization.startedAt,
-      );
-      pendingFinalizationLatencyRef.current = null;
-    }
-  }, [rows]);
+  const onTranscriptCommit = useCallback((commit: TranscriptCommit) => {
+    latencyRef.current.domCommitted(commit, performance.now());
+  }, []);
 
   useEffect(() => {
     if (!isListening) return;
@@ -197,6 +151,17 @@ export function useConversationSession() {
   ) => {
     const next = update(rowsRef.current);
     if (next === rowsRef.current) return;
+    const adoptedAt = performance.now();
+    for (let index = 0; index < next.length; index += 1) {
+      const row = next[index];
+      if (row === rowsRef.current[index]) continue;
+      for (const language of ["ja", "en"] as const) {
+        const display = getTranscriptDisplay(row, language);
+        if (display.kind && display.text.trim()) {
+          latencyRef.current.adopted(row, display.kind, language, adoptedAt);
+        }
+      }
+    }
     rowsRef.current = next;
     setRows(next);
   }, []);
@@ -228,9 +193,7 @@ export function useConversationSession() {
       .filter((candidate) => candidate !== rowId);
     committedTranscriptionRowsRef.current.delete(rowId);
     translationCandidatesRef.current.delete(rowId);
-    speechStartedAtByRowRef.current.delete(rowId);
-    sourceDisplayMeasuredRowsRef.current.delete(rowId);
-    translationDisplayMeasuredRowsRef.current.delete(rowId);
+    latencyRef.current.discard(rowId);
 
     if (activeRowIdRef.current === rowId) {
       activeRowIdRef.current = null;
@@ -297,10 +260,11 @@ export function useConversationSession() {
     if (fragments.length === 0) return;
     updateRows((current) => {
       let next = current;
-      for (const { rowId, targetLanguage, text } of fragments) {
+      for (const { rowId, targetLanguage, text, receivedAt } of fragments) {
         const index = next.findIndex((row) => row.id === rowId);
         if (index < 0) continue;
         const row = next[index];
+        latencyRef.current.translationReceived(row.id, targetLanguage, receivedAt);
         const candidates = appendTranslationCandidate(
           translationCandidatesRef.current.get(rowId) ?? {},
           targetLanguage,
@@ -330,7 +294,7 @@ export function useConversationSession() {
     playbackRowIdRef.current = row.id;
     const speechStartedAt = speechStartedAtRef.current;
     if (speechStartedAt !== null) {
-      speechStartedAtByRowRef.current.set(row.id, speechStartedAt);
+      latencyRef.current.speechStarted(row.id, speechStartedAt);
     }
 
     updateRows((current) => [...current, row]);
@@ -434,7 +398,8 @@ export function useConversationSession() {
     const rowId = activeRowIdRef.current;
     const startedAt = silenceStartedAtRef.current;
     if (rowId && startedAt !== null) {
-      pendingFinalizationLatencyRef.current = { rowId, startedAt };
+      const row = rowsRef.current.find((candidate) => candidate.id === rowId);
+      if (row) latencyRef.current.speechEnded(row, startedAt, performance.now());
     }
     if (rowId) {
       commitTranscriptionRow(rowId);
@@ -475,7 +440,6 @@ export function useConversationSession() {
     activeSourceTextRef.current = "";
     speechStartedAtRef.current = null;
     silenceStartedAtRef.current = null;
-    pendingFinalizationLatencyRef.current = null;
     transcriptionConnectionRef.current?.close();
     transcriptionConnectionRef.current = null;
     sourceStreamRef.current?.getTracks().forEach((track) => track.stop());
@@ -506,11 +470,11 @@ export function useConversationSession() {
     if (!text && !replaceWithCompletedTranscript) return;
 
     const elapsedMs = Math.max(0, Date.now() - sessionStartedAtRef.current);
-    const measurementStartedAt = speechStartedAtRef.current ?? performance.now();
+    const receivedAt = performance.now();
     const rowId = ensureTranscriptionRow(event.item_id, elapsedMs);
-    speechStartedAtRef.current = measurementStartedAt;
-    if (!speechStartedAtByRowRef.current.has(rowId)) {
-      speechStartedAtByRowRef.current.set(rowId, measurementStartedAt);
+    const receivedRow = rowsRef.current.find((row) => row.id === rowId);
+    if (receivedRow && text.trim()) {
+      latencyRef.current.sourceReceived(receivedRow, receivedAt, replaceWithCompletedTranscript);
     }
 
     if (!replaceWithCompletedTranscript && rowId === activeRowIdRef.current && !stoppingRef.current) {
@@ -526,7 +490,8 @@ export function useConversationSession() {
         ? text
         : `${row.sourceText ?? ""}${text}`;
       const sourceStatus = replaceWithCompletedTranscript ? "completed" : "streaming";
-      if (sourceText === row.sourceText && row.sourceStatus === sourceStatus) return current;
+      const sourceLanguageStatus = replaceWithCompletedTranscript ? "final" : sourceText.trim() ? "provisional" : "pending";
+      if (sourceText === row.sourceText && row.sourceStatus === sourceStatus && sourceLanguageStatus === row.sourceLanguageStatus) return current;
 
       const sourceLanguage = detectLanguage(sourceText);
       const translationCandidates = translationCandidatesRef.current.get(row.id);
@@ -542,7 +507,6 @@ export function useConversationSession() {
       }
       if (
         row.id === playbackRowIdRef.current &&
-        sourceLanguage !== "unknown" &&
         sourceLanguage !== lastSourceLanguageRef.current
       ) {
         lastSourceLanguageRef.current = sourceLanguage;
@@ -555,6 +519,7 @@ export function useConversationSession() {
         sourceStatus,
         status: sourceStatus === "completed" && row.speechEndMs !== undefined ? "final" : row.status,
         sourceLanguage,
+        sourceLanguageStatus,
         endMs: Math.max(row.endMs ?? 0, elapsedMs),
         ja,
         en,
@@ -579,13 +544,10 @@ export function useConversationSession() {
     if (event.type === "input_audio_buffer.committed" && event.item_id) {
       bindTranscriptionItem(event.item_id);
     } else if (event.type === "input_audio_buffer.speech_started") {
-      const measurementStartedAt = speechStartedAtRef.current ?? performance.now();
       const elapsedMs = typeof event.audio_start_ms === "number"
         ? event.audio_start_ms + transcriptionClockOffsetRef.current
         : Math.max(0, Date.now() - sessionStartedAtRef.current);
       const rowId = ensureTranscriptionRow(event.item_id, elapsedMs);
-      speechStartedAtRef.current = measurementStartedAt;
-      speechStartedAtByRowRef.current.set(rowId, measurementStartedAt);
       lastSourceLanguageRef.current = "unknown";
       queueMicrotask(syncAudioOutputs);
       if (!stoppingRef.current) markSpeechDetected();
@@ -727,10 +689,7 @@ export function useConversationSession() {
     activeSourceTextRef.current = "";
     speechStartedAtRef.current = null;
     silenceStartedAtRef.current = null;
-    speechStartedAtByRowRef.current.clear();
-    sourceDisplayMeasuredRowsRef.current.clear();
-    translationDisplayMeasuredRowsRef.current.clear();
-    pendingFinalizationLatencyRef.current = null;
+    latencyRef.current.reset();
     resetBrowserLatencyMeasurements();
     sessionStartedAtRef.current = Date.now();
     const startAbortScope = createConnectionAbortScope(
@@ -870,6 +829,7 @@ export function useConversationSession() {
     elapsed,
     errorMessage,
     isListening,
+    onTranscriptCommit,
     rows,
     setAudioMode,
     startConversation,
