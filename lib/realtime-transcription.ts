@@ -111,6 +111,7 @@ export async function connectTranscription({
 
   const events = peerConnection.createDataChannel("oai-events");
   events.onmessage = ({ data }) => {
+    if (closed) return;
     try {
       const event = JSON.parse(String(data)) as TranscriptionEvent;
       onEvent(event);
