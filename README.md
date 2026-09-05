@@ -18,6 +18,15 @@ npm run dev
 
 Set the server API key as `OPENAI_API_KEY` in `.env.local`, then open [http://localhost:3000](http://localhost:3000) in your browser. Do not expose the API key through a `NEXT_PUBLIC_*` variable.
 
+For specialized vocabulary, optionally set recording context and literal term hints in `.env.local`:
+
+```dotenv
+OPENAI_TRANSCRIPTION_PROMPT="A Japanese and English discussion about live translation software."
+OPENAI_TRANSCRIPTION_KEYWORDS='["xlator", "OpenAI", "WebRTC"]'
+```
+
+Restart the server and reload the browser after changing these values so prefetched client secrets are replaced. Blank values send no hints. Keywords must be a JSON array of non-empty strings without line breaks or `<` / `>`; surrounding whitespace and duplicates are removed. These are recognition hints, not mandatory output or a translation dictionary. They are sent to OpenAI and may be included in upstream session metadata. The default transcription model, bilingual language hints, and `minimal` delay remain unchanged. Real-audio accuracy gains require evaluation with representative vocabulary; see the [official transcription guide](https://developers.openai.com/api/docs/guides/realtime-transcription).
+
 ## Development commands
 
 ```bash
