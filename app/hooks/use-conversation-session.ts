@@ -34,21 +34,19 @@ import {
   createLiveUtterance,
   detectLanguage,
   findReusableTranscriptionRow,
-  findTranslationRowIndex,
   replaceRow,
 } from "@/lib/utterance-alignment";
+
+import {
+  TranslationFragmentBuffer,
+  type AssignedTranslationFragment,
+} from "@/lib/translation-fragments";
 
 export type AudioMode = "off" | "ja" | "en" | "auto";
 export type ConnectionStatus = "idle" | "connecting" | "live" | "error";
 
 const EMPTY_ROW_CLEANUP_MS = 5_000;
 const STOP_DRAIN_TIMEOUT_MS = 5_000;
-const PENDING_TRANSLATION_MAX_AGE_MS = 3_000;
-
-type PendingTranslation = {
-  elapsedMs: number;
-  text: string;
-};
 
 export function useConversationSession() {
   const [isListening, setIsListening] = useState(false);
@@ -96,9 +94,7 @@ export function useConversationSession() {
   const translationCandidatesRef = useRef(
     new Map<string, Partial<Record<TargetLanguage, string>>>(),
   );
-  const pendingTranslationsRef = useRef(
-    new Map<TargetLanguage, PendingTranslation>(),
-  );
+  const pendingTranslationsRef = useRef(new TranslationFragmentBuffer());
   const translationClockOffsetsRef = useRef(new Map<TargetLanguage, number>());
 
   useEffect(() => {
@@ -295,6 +291,33 @@ export function useConversationSession() {
     silenceStartedAtRef.current = null;
   }, [clearEmptyRowCleanup, updateRows]);
 
+  const applyTranslationFragments = useCallback((
+    fragments: AssignedTranslationFragment[],
+  ) => {
+    if (fragments.length === 0) return;
+    updateRows((current) => {
+      let next = current;
+      for (const { rowId, targetLanguage, text } of fragments) {
+        const index = next.findIndex((row) => row.id === rowId);
+        if (index < 0) continue;
+        const row = next[index];
+        const candidates = appendTranslationCandidate(
+          translationCandidatesRef.current.get(rowId) ?? {},
+          targetLanguage,
+          text,
+        );
+        translationCandidatesRef.current.set(rowId, candidates);
+        if (row.sourceLanguage !== "unknown" && row.sourceLanguage !== targetLanguage) {
+          next = replaceRow(next, index, {
+            ...row,
+            [targetLanguage]: candidates[targetLanguage] ?? "",
+          });
+        }
+      }
+      return next;
+    });
+  }, [updateRows]);
+
   const createActiveRow = useCallback((elapsedMs: number) => {
     const sequence = (rowsRef.current.at(-1)?.sequence ?? 0) + 1;
     const row = createLiveUtterance(
@@ -310,22 +333,16 @@ export function useConversationSession() {
       speechStartedAtByRowRef.current.set(row.id, speechStartedAt);
     }
 
-    const pendingCandidates: Partial<Record<TargetLanguage, string>> = {};
-    for (const [targetLanguage, pending] of pendingTranslationsRef.current) {
-      if (Math.abs(pending.elapsedMs - elapsedMs) <= PENDING_TRANSLATION_MAX_AGE_MS) {
-        pendingCandidates[targetLanguage] = pending.text;
-      }
-    }
-    pendingTranslationsRef.current.clear();
-    if (Object.keys(pendingCandidates).length > 0) {
-      translationCandidatesRef.current.set(row.id, pendingCandidates);
-    }
-
     updateRows((current) => [...current, row]);
+    applyTranslationFragments(pendingTranslationsRef.current.reconcile(
+      rowsRef.current,
+      row.id,
+      performance.now(),
+    ));
     unboundTranscriptionRowsRef.current.push(row.id);
     scheduleEmptyRowCleanup(row.id);
     return row.id;
-  }, [scheduleEmptyRowCleanup, updateRows]);
+  }, [applyTranslationFragments, scheduleEmptyRowCleanup, updateRows]);
 
   const bindTranscriptionItem = useCallback((itemId: string) => {
     const rowId = bindTranscriptionItemToOldestRow(
@@ -600,52 +617,23 @@ export function useConversationSession() {
     event: TranslationEvent,
   ) => {
     if (!event.delta) return;
-    const fallbackElapsedMs = Math.max(0, Date.now() - sessionStartedAtRef.current);
+    const receivedElapsedMs = Math.max(0, Date.now() - sessionStartedAtRef.current);
     const elapsedMs = typeof event.elapsed_ms === "number"
       ? event.elapsed_ms + (translationClockOffsetsRef.current.get(targetLanguage) ?? 0)
-      : fallbackElapsedMs;
-
-    updateRows((current) => {
-      const index = findTranslationRowIndex(
-        current,
-        activeRowIdRef.current,
-        elapsedMs,
-      );
-      if (index < 0) {
-        const pending = pendingTranslationsRef.current.get(targetLanguage);
-        pendingTranslationsRef.current.set(targetLanguage, {
-          elapsedMs,
-          text: `${
-            pending && elapsedMs - pending.elapsedMs <= PENDING_TRANSLATION_MAX_AGE_MS
-              ? pending.text
-              : ""
-          }${event.delta}`,
-        });
-        return current;
-      }
-
-      const row = current[index];
-      const candidates = translationCandidatesRef.current.get(row.id) ?? {};
-      const nextCandidates = appendTranslationCandidate(
-        candidates,
+      : undefined;
+    const fragments = pendingTranslationsRef.current.receive(
+      rowsRef.current,
+      activeRowIdRef.current,
+      {
         targetLanguage,
-        event.delta!,
-      );
-      const translatedText = nextCandidates[targetLanguage] ?? "";
-      translationCandidatesRef.current.set(row.id, nextCandidates);
-
-      if (
-        row.sourceLanguage === "unknown" ||
-        row.sourceLanguage === targetLanguage
-      ) {
-        return current;
-      }
-      return replaceRow(current, index, {
-        ...row,
-        [targetLanguage]: translatedText,
-      });
-    });
-  }, [updateRows]);
+        text: event.delta,
+        elapsedMs,
+        receivedElapsedMs,
+        receivedAt: performance.now(),
+      },
+    );
+    applyTranslationFragments(fragments);
+  }, [applyTranslationFragments]);
 
   const handleTranslationEvent = useCallback((
     targetLanguage: TargetLanguage,
