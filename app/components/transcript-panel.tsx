@@ -36,13 +36,12 @@ export function TranscriptPanel({
 }) {
   const isJapanese = language === "ja";
   const listRef = useRef<HTMLDivElement>(null);
-  const latestText = rows.at(-1)?.[language] ?? "";
 
   useLayoutEffect(() => {
     const list = listRef.current;
     if (!list) return;
     list.scrollTop = list.scrollHeight;
-  }, [latestText, rows.length]);
+  }, [rows]);
 
   return (
     <section className={`transcript-panel language-${language}`} aria-labelledby={`${language}-heading`}>

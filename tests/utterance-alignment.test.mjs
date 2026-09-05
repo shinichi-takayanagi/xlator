@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   alignSourceAndTranslation,
   appendTranslationCandidate,
+  bindTranscriptionItemToOldestRow,
   createLiveUtterance,
   detectLanguage,
   findLastRowStartingAtOrBefore,
@@ -90,6 +91,39 @@ test("never reuses a row already bound to a different transcription item", () =>
       ["row-1-finished", "row-2"],
     ),
     "row-1-finished",
+  );
+});
+
+test("binds committed item IDs before out-of-order transcript events arrive", () => {
+  const itemRows = new Map();
+  const rowItems = new Map();
+  const unboundRows = ["row-1", "row-2"];
+
+  assert.equal(
+    bindTranscriptionItemToOldestRow(
+      "item-1",
+      itemRows,
+      rowItems,
+      unboundRows,
+    ),
+    "row-1",
+  );
+  assert.equal(
+    bindTranscriptionItemToOldestRow(
+      "item-2",
+      itemRows,
+      rowItems,
+      unboundRows,
+    ),
+    "row-2",
+  );
+  assert.equal(
+    findReusableTranscriptionRow("item-2", itemRows, rowItems, null),
+    "row-2",
+  );
+  assert.equal(
+    findReusableTranscriptionRow("item-1", itemRows, rowItems, null),
+    "row-1",
   );
 });
 

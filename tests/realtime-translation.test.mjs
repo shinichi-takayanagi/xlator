@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createConnectionAbortScope,
+  waitForDataChannel,
   waitForPeerConnection,
   withAbort,
-} from "../lib/realtime-translation.ts";
+  withAbortCleanup,
+} from "../lib/realtime-connection.ts";
 
 class FakePeerConnection extends EventTarget {
   connectionState = "connecting";
@@ -12,6 +14,15 @@ class FakePeerConnection extends EventTarget {
   transitionTo(connectionState) {
     this.connectionState = connectionState;
     this.dispatchEvent(new Event("connectionstatechange"));
+  }
+}
+
+class FakeDataChannel extends EventTarget {
+  readyState = "connecting";
+
+  transitionTo(readyState) {
+    this.readyState = readyState;
+    this.dispatchEvent(new Event(readyState === "open" ? "open" : "close"));
   }
 }
 
@@ -35,6 +46,33 @@ test("makes a shared pending operation cancelable for one caller", async () => {
   const pending = withAbort(new Promise(() => {}), controller.signal);
   controller.abort();
   await assert.rejects(pending, { name: "AbortError" });
+});
+
+test("cleans up a media resource that arrives after startup cancellation", async () => {
+  const controller = new AbortController();
+  let resolveResource;
+  const resourcePromise = new Promise((resolve) => {
+    resolveResource = resolve;
+  });
+  const cleaned = [];
+  const pending = withAbortCleanup(
+    resourcePromise,
+    controller.signal,
+    (resource) => cleaned.push(resource),
+  );
+
+  controller.abort();
+  await assert.rejects(pending, { name: "AbortError" });
+  resolveResource("late microphone stream");
+  await Promise.resolve();
+  assert.deepEqual(cleaned, ["late microphone stream"]);
+});
+
+test("waits for the realtime data channel before startup completes", async () => {
+  const dataChannel = new FakeDataChannel();
+  const opened = waitForDataChannel(dataChannel);
+  dataChannel.transitionTo("open");
+  await opened;
 });
 
 test("bounds the complete connection startup with one deadline", async () => {

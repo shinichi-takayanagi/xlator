@@ -31,12 +31,19 @@ test("creates a low-delay bilingual transcription secret", async () => {
   let upstreamRequest;
   globalThis.fetch = async (url, init) => {
     upstreamRequest = { url, init };
-    return Response.json({ value: "transcription-secret", expires_at: 1234 });
+    return Response.json({
+      value: "transcription-secret",
+      expires_at: 1234,
+      session: { type: "transcription" },
+    });
   };
 
   const response = await POST();
   assert.equal(response.status, 200);
-  assert.equal((await response.json()).value, "transcription-secret");
+  assert.deepEqual(await response.json(), {
+    value: "transcription-secret",
+    expires_at: 1234,
+  });
   assert.equal(upstreamRequest.url, "https://api.openai.com/v1/realtime/client_secrets");
   assert.equal(upstreamRequest.init.headers.Authorization, "Bearer server-only-test-key");
 
