@@ -1,7 +1,7 @@
 # xlator Specification
 
 Last updated: 2026-09-06
-Status: Dual Realtime transcription-and-translation path with locally committed, item-bound row alignment implemented; automated verification completed; post-audit browser and translated-audio playback verification pending
+Status: Dual Realtime path with acoustic turn finalization and bounded stop draining implemented; automated verification completed; browser and translated-audio field verification pending
 
 ## 1. Purpose
 
@@ -79,12 +79,12 @@ Yep, I'm fine
 
 - Keep the same utterance count, order, and sequence numbers in both logs.
 - Show the sequence number, start time, `原文` (Source), `翻訳` (Translation), or `処理中` (Processing), and the text in each row.
-- Display unfinished rows with reduced emphasis.
+- Display unfinished rows with reduced emphasis. A live row stays draft until its acoustic turn has ended and its source transcript has completed; this does not imply that the independent streaming translation is complete.
 - Allow each panel to scroll internally and independently.
 - Scroll immediately to the latest position, without animation, when a new utterance or text delta arrives.
 - Show 16 sample utterances on the initial screen for UI verification.
 - Clear the sample data and switch to live rows when a conversation starts.
-- Keep captured live rows visible after the conversation stops.
+- Keep captured live rows visible after the conversation stops. Stop the microphone, local VAD, and translated audio playback immediately, then accept final source and translated text for up to five seconds. The controls return to idle during this bounded drain. Starting again cancels the previous drain and starts a new log.
 - Restore the sample data after a page reload.
 
 ### Connection status
@@ -113,13 +113,15 @@ type Utterance = {
   sourceText?: string;
   startMs?: number;
   endMs?: number;
+  speechEndMs?: number;
+  sourceStatus?: "pending" | "streaming" | "completed";
   status?: "draft" | "final";
   ja: string;
   en: string;
 };
 ```
 
-Initial sample data contains only display-time strings and translated text. Live data also contains `sourceText`, millisecond timestamps, and status.
+Initial sample data contains only display-time strings and translated text. Live data also contains `sourceText`, millisecond timestamps, and status. `speechEndMs` records the local acoustic silence-start time when available, or the local stop/end time; `endMs` continues to track source-text event arrival. `sourceStatus` distinguishes pending/partial source text from the completed source transcript. The legacy `status` becomes final only after both speech end and source completion; there is no per-utterance Translation completion event.
 
 ## 6. System architecture
 
@@ -189,18 +191,22 @@ Consume `session.output_transcript.delta` from both target-language Translation 
 
 Keep one accumulated candidate per row and target language. If the source language is not known yet, buffer both candidates. Once the dedicated transcription session identifies the source language, render only the candidate in the opposite language. Continue appending later deltas from that target session and ignore the same-language target for display. The source-language field always comes from `gpt-live-transcribe`, never from a Translation session.
 
+### Stop draining
+
+For a live session, stop microphone tracks, VAD, timers, and translated playback immediately; commit any active captured utterance even if its source text has not arrived. Send `session.close` to both Translation data channels, continue consuming their transcript events until `session.closed`, and wait for pending source completions. Close all connections after these conditions or one shared five-second deadline, preserving populated rows and removing empty ones. A deadline does not claim that partial source text or translated output is complete. Repeated stop calls are idempotent. A new start, startup cancellation, an error, or unmount aborts old resources immediately; old events and drain callbacks cannot modify or close the new session. WebRTC drain behavior is covered with mocked transports and requires live-browser confirmation.
+
 ### Utterance boundaries and alignment
 
-The current MVP uses debounced local VAD to commit Realtime transcription turns, then uses the returned `item_id` as the authority for later events within each turn. A fallback timer covers missing local silence or completion events.
+The current MVP uses debounced local VAD to commit Realtime transcription turns, then uses the returned `item_id` as the authority for later events within each turn. A silence watchdog covers a missed VAD end callback; source completion is tracked separately.
 
 - Require 120 ms of sustained audio above the adaptive RMS threshold before confirming local speech and creating an empty aligned draft row.
 - Infer local speech timing from the microphone's RMS level and a tracking noise floor.
-- Commit the transcription input buffer and finalize the local row after 320 ms of silence when the source candidate ends in sentence punctuation (`。.!！？?…`), or after 450 ms otherwise.
-- Start a 1.2-second fallback when confirmed local speech creates a row, and restart it after each input-transcript delta. If local VAD misses the end and no new delta arrives before the fallback expires, commit and finalize the row. A later transcription completion may still replace the finalized source text.
-- Remove a locally created row after five seconds if it never receives source text, and remove all such empty rows immediately when the session stops or fails.
+- Commit the transcription input buffer and end the acoustic turn after 320 ms of silence when the source candidate ends in sentence punctuation (`。.!！？?…`), or after 450 ms otherwise. Source completion may arrive later and updates its original row; it never ends a different active turn.
+- Arm a 1.2-second watchdog only when local acoustic silence begins and cancel it when speech resumes. It covers a missed VAD end callback while silence persists. Neither speech start nor transcript arrival arms or restarts it, so text-processing delay cannot force a commit during continuous speech. For a source-created row that VAD missed, mark the VAD tracker as having detected a turn so subsequent acoustic samples can detect silence; a late delta for an ended row does not reactivate speech.
+- A five-second cleanup removes only abandoned empty rows. Keep active speech and rows with committed/bound audio while source transcription is pending, even beyond five seconds. Remove ended empty rows on an empty source completion, and retain discarded item IDs until session reset so duplicates cannot attach to the next row. On normal stop, retain pending rows during the five-second drain and remove remaining empty rows when it ends. Errors remove empty rows immediately.
 - Associate every Realtime transcription delta and completion event with its committed local row by `item_id`; a distinct item never shares a bound row.
 
-This prevents transient local noise and Translation timing from creating persistent ghost rows, and prevents successive locally committed transcription turns from being concatenated into one row. Local VAD can still misidentify boundaries for quiet speech, loud background noise, or a mid-sentence pause. VAD based on a high-accuracy audio classification model is not implemented.
+This prevents Translation timing from creating rows and keeps successive locally committed transcription turns separate. A committed row whose source completion never arrives stays pending until stop or error cleanup. Local VAD can still misidentify boundaries for quiet speech, loud background noise, or a mid-sentence pause. VAD based on a high-accuracy audio classification model is not implemented.
 
 ## 9. Translated audio
 
@@ -234,7 +240,7 @@ Generate files in the browser from the current aligned records. Do not use serve
 - Fetch each client secret and create its WebRTC offer in parallel.
 - Create an empty draft row after 120 ms of sustained local speech and render transcription plus opposite-language Translation transcript deltas as soon as the source language is known.
 - Use `gpt-live-transcribe` with `minimal` delay by default and `gpt-realtime-translate` for translated text and audio.
-- Commit and finalize local turns at the 320/450 ms silence boundary, with a 1.2-second no-delta fallback.
+- Commit local turns at the 320/450 ms silence boundary, with a 1.2-second acoustic-silence watchdog. Finalize displayed source state only once the corresponding source completion arrives.
 - Do not rerender an unchanged source snapshot, and keep each Realtime `item_id` bound to one aligned row.
 - Do not animate automatic scrolling.
 - Client logic cannot eliminate model processing or network latency.
@@ -268,7 +274,8 @@ CI does not reproduce a physical microphone. Before a release, manually verify b
 | Dual Realtime browser path | Dedicated `gpt-live-transcribe` source transcription plus English-target and Japanese-target `gpt-realtime-translate` text/audio sessions are implemented; locally committed rows, commit-event `item_id` binding, target-language candidate buffering, one full-startup deadline, and late-resource cleanup preserve alignment and lifecycle safety | Production build and automated route, item-binding, row-selection, candidate-buffering, alignment, startup-cancellation, data-channel, and connection utility tests pass. On 2026-09-02, the earlier implementation received the registered Japanese fixture followed by the English fixture through the microphone with aligned rows and empty-row cleanup. The lifecycle and commit-binding fixes from the implementation-to-spec audit have not yet been repeated with a physical microphone. | Automated verification passes; post-audit browser text, translated-audio playback, natural alternating conversation, and representative latency field verification remain pending |
 | Live API sanity | The server can create transcription and Translation client secrets | On 2026-09-01, both secret request types returned 200. One real-audio transcription run per direction succeeded with `minimal` delay and `languages: ["en", "ja"]`: Japanese first delta 3,186 ms and English 2,387 ms. | API components verified individually; the post-audit three-session browser composition still needs field re-verification |
 | Optional transcription context | Recording context and normalized keyword hints can be configured through server environment variables | Mocked route tests cover hint propagation, omission, validation, and response filtering; live-API context behavior and vocabulary accuracy improvements are not verified | Keep defaults unchanged; evaluate representative domain audio with and without hints before claiming accuracy gains |
-| Normal CI | GitHub Actions runs `npm run verify` | On 2026-09-06, lint, type checking, the production build, and 39 tests passed locally after adding optional transcription context. On 2026-09-05, `npm audit` reported no known vulnerabilities after the runtime and build-tool maintenance update | Required pull request quality gate |
+| Acoustic lifecycle and stop drain | Acoustic-only watchdog, separate source completion, pending-row retention, discarded-item isolation, and bounded stop drain are implemented | Mounted React-hook tests with mocked VAD/transports and controlled clocks cover continuous speech, resumed speech, late correction, quiet-speech recovery, stop-before-source, stop/restart, errors, and mute behavior; transport tests cover drain completion, deadline, and cancellation | Physical microphone/WebRTC timing and final-output delivery remain unverified |
+| Normal CI | GitHub Actions runs `npm run verify` | On 2026-09-06, lint, type checking, the production build, and 52 tests passed locally after adding acoustic lifecycle and stop-drain regression coverage. On 2026-09-05, `npm audit` reported no known vulnerabilities after the runtime and build-tool maintenance update | Required pull request quality gate |
 | Live-API smoke CLI | WAV conversion, WebSocket streaming, CER/WER, translation terms, translated audio, repeated runs, p50/p95 summaries, latency comparison, and clean closure checks are implemented | On 2026-09-01, both registered cases ran ten times locally. On 2026-09-02, one regression run per direction again returned source text, translation text, translated audio, and clean session closure. The command exited nonzero on translation error-rate and required-term assertions; the English-to-Japanese output omitted the required greeting. | Covers the same Translation model and output events as the browser, but uses the Translation session's optional input transcript instead of the browser's dedicated transcription session |
 | Real-audio fixture | Japanese-to-English and English-to-Japanese real-speech WAV files and reference data are registered | The local `--validate-only` check passes, and both files were processed successfully in ten live runs per direction | Human confirmation of the Japanese reference is pending because all ten live transcripts included `とても`, which is absent from the current reference; mixed-language, numbers, dates, times, and proper-noun coverage remains incomplete |
 | Browser latency diagnostics | Speech-to-source-display, speech-to-translation-display, and silence-to-row-final measurements are implemented without storing transcript content | Pure timing calculations and the production build pass automated verification | Dual Realtime physical-microphone measurements have not been collected |
@@ -290,7 +297,7 @@ CI does not reproduce a physical microphone. Before a release, manually verify b
    - Complete the six steps in `docs/realtime-smoke.md`.
    - The 2026-09-02 fixture-playback run verified that transcription and both Translation sessions connect in `再生しない`, opposite-language text stays aligned across Japanese then English input, transient empty rows are removed, and stopping preserves only populated rows.
    - Repeat the muted-mode check with natural speech and at least three alternating utterances.
-   - Re-run the basic fixtures against the audited shared-startup timeout, startup-buffer clearing, data-channel readiness, and `input_audio_buffer.committed` item binding.
+   - Re-run the basic fixtures against the audited shared-startup timeout, startup-buffer clearing, data-channel readiness, and `input_audio_buffer.committed` item binding. Verify continuous speech longer than five seconds without transcript output, source corrections after silence, and stopping before the first source delta; confirm pending final text drains while microphone and playback stay stopped.
    - With playback enabled, verify alternating Japanese/English speech, one row per transcription `item_id`, no persistent empty rows, opposite-language translated audio, live mute-mode changes without reconnection, and stopping both during and after connection.
 4. Tune thresholds using the first measured results.
    - The 2026-09-01 direct-Translation benchmark measured Japanese-to-English source p50/p95 at 3,904/4,920 ms, translation at 4,199/10,364 ms, and paired translation-minus-source at 294/6,207 ms. Translation was the median critical path and had the largest tail.
@@ -372,9 +379,9 @@ Do not keep scaffold code for databases, authentication, sample APIs, or other f
 - Prefetched short-lived client secrets are reused at connection start if they have not expired.
 - Sustained local speech creates one empty aligned draft row before transcript text arrives; Translation events do not create rows.
 - Alternating Japanese and English speech produces both languages under the same sequence number.
-- Local VAD commits and finalizes one transcription turn at each confirmed silence boundary.
+- Local VAD commits one transcription turn at each confirmed silence boundary and displayed source state becomes final only after source completion.
 - Realtime transcription deltas and completions stay associated with their row through `item_id`, and distinct item IDs never share a row.
-- Empty rows disappear after five seconds or immediately when the session stops or fails.
+- Continuous speech and pending committed rows survive empty-row cleanup. Ended empty completed rows disappear; normal stop drains pending text for up to five seconds, and failure removes empty rows immediately.
 - Realtime Translation output-transcript deltas render only on the side opposite the detected source language.
 - Translated audio plays only in the language opposite the source language.
 - TXT, CSV, JSON, and SRT files can be downloaded.

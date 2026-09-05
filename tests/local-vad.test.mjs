@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   COMPLETE_UTTERANCE_SILENCE_MS,
   DEFAULT_UTTERANCE_SILENCE_MS,
-  NO_TRANSCRIPT_FINALIZE_MS,
+  SILENCE_WATCHDOG_MS,
   SPEECH_CONFIRMATION_MS,
   getVadSilenceDurationMs,
 } from "../lib/local-vad.ts";
@@ -11,7 +11,7 @@ import {
 test("shortens local VAD silence after complete utterances", () => {
   assert.equal(COMPLETE_UTTERANCE_SILENCE_MS, 320);
   assert.equal(DEFAULT_UTTERANCE_SILENCE_MS, 450);
-  assert.equal(NO_TRANSCRIPT_FINALIZE_MS, 1_200);
+  assert.equal(SILENCE_WATCHDOG_MS, 1_200);
   assert.equal(SPEECH_CONFIRMATION_MS, 120);
   assert.equal(getVadSilenceDurationMs("今日は暑いですね。"), 320);
   assert.equal(getVadSilenceDurationMs("Are you okay?\""), 320);

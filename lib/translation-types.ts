@@ -9,6 +9,8 @@ export type Utterance = {
   sourceText?: string;
   startMs?: number;
   endMs?: number;
+  speechEndMs?: number;
+  sourceStatus?: "pending" | "streaming" | "completed";
   status?: "draft" | "final";
   ja: string;
   en: string;

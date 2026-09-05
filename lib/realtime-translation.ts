@@ -20,6 +20,7 @@ export type TranslationConnection = {
   targetLanguage: TargetLanguage;
   audio: HTMLAudioElement;
   close: () => void;
+  drain: (timeoutMs: number) => Promise<void>;
 };
 
 type ConnectOptions = {
@@ -130,29 +131,50 @@ export async function connectTranslation({
   };
 
   const events = peerConnection.createDataChannel("oai-events");
-  events.onmessage = ({ data }) => {
-    try {
-      onEvent(targetLanguage, JSON.parse(String(data)) as TranslationEvent);
-    } catch {
-      // Ignore malformed or unknown data channel messages.
-    }
-  };
-
   let closed = false;
+  let drainPromise: Promise<void> | null = null;
+  let resolveDrain: (() => void) | null = null;
+  let drainTimer: ReturnType<typeof setTimeout> | null = null;
   const close = () => {
     if (closed) return;
     closed = true;
     connectionSignal.removeEventListener("abort", close);
     abortScope.dispose();
-    if (events.readyState === "open") {
-      events.send(JSON.stringify({ type: "session.close" }));
-    }
+    if (drainTimer !== null) clearTimeout(drainTimer);
+    drainTimer = null;
+    resolveDrain?.();
+    resolveDrain = null;
     translatedAudio.pause();
     translatedAudio.srcObject = null;
     events.close();
     peerConnection.close();
   };
+  events.onmessage = ({ data }) => {
+    if (closed) return;
+    try {
+      const event = JSON.parse(String(data)) as TranslationEvent;
+      onEvent(targetLanguage, event);
+      if (event.type === "session.closed") close();
+    } catch {
+      // Ignore malformed or unknown data channel messages.
+    }
+  };
+  events.addEventListener("close", close, { once: true });
   connectionSignal.addEventListener("abort", close, { once: true });
+
+  const drain = (timeoutMs: number): Promise<void> => {
+    if (drainPromise) return drainPromise;
+    if (closed) return Promise.resolve();
+    drainPromise = new Promise<void>((resolve) => { resolveDrain = resolve; });
+    drainTimer = setTimeout(close, timeoutMs);
+    try {
+      if (events.readyState !== "open") close();
+      else events.send(JSON.stringify({ type: "session.close" }));
+    } catch {
+      close();
+    }
+    return drainPromise;
+  };
 
   const clientSecretPromise = withAbort(getClientSecret(targetLanguage), connectionSignal);
   const localOfferPromise = withAbort(
@@ -207,5 +229,6 @@ export async function connectTranslation({
     targetLanguage,
     audio: translatedAudio,
     close,
+    drain,
   };
 }
