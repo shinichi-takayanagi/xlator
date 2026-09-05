@@ -1,4 +1,11 @@
 import type { TargetLanguage } from "./translation-types";
+import {
+  abortError,
+  createConnectionAbortScope,
+  waitForDataChannel,
+  waitForPeerConnection,
+  withAbort,
+} from "./realtime-connection";
 
 export type { TargetLanguage } from "./translation-types";
 
@@ -36,101 +43,8 @@ type CachedClientSecret = {
 };
 
 const CLIENT_SECRET_EXPIRY_SKEW_MS = 5_000;
-const CONNECTION_TIMEOUT_MS = 15_000;
 const cachedClientSecrets = new Map<TargetLanguage, CachedClientSecret>();
 const pendingClientSecrets = new Map<TargetLanguage, Promise<string>>();
-
-function abortError(signal: AbortSignal) {
-  return signal.reason instanceof Error
-    ? signal.reason
-    : new DOMException("接続がキャンセルされました。", "AbortError");
-}
-
-export function createConnectionAbortScope(
-  parentSignal?: AbortSignal,
-  timeoutMs = CONNECTION_TIMEOUT_MS,
-) {
-  const controller = new AbortController();
-  let timeout: ReturnType<typeof globalThis.setTimeout> | undefined;
-
-  const clearDeadline = () => {
-    if (timeout === undefined) return;
-    globalThis.clearTimeout(timeout);
-    timeout = undefined;
-  };
-  const onParentAbort = () => {
-    controller.abort(
-      parentSignal?.reason ?? new DOMException("接続がキャンセルされました。", "AbortError"),
-    );
-  };
-
-  if (parentSignal?.aborted) {
-    onParentAbort();
-  } else {
-    parentSignal?.addEventListener("abort", onParentAbort, { once: true });
-    timeout = globalThis.setTimeout(() => {
-      controller.abort(new Error("Realtime接続がタイムアウトしました。"));
-    }, timeoutMs);
-  }
-
-  return {
-    signal: controller.signal,
-    clearDeadline,
-    dispose() {
-      clearDeadline();
-      parentSignal?.removeEventListener("abort", onParentAbort);
-    },
-  };
-}
-
-export function withAbort<T>(promise: Promise<T>, signal?: AbortSignal) {
-  if (!signal) return promise;
-  if (signal.aborted) return Promise.reject(abortError(signal));
-
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(abortError(signal));
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(resolve, reject).finally(() => {
-      signal.removeEventListener("abort", onAbort);
-    });
-  });
-}
-
-export function waitForPeerConnection(
-  peerConnection: RTCPeerConnection,
-  signal?: AbortSignal,
-) {
-  if (peerConnection.connectionState === "connected") return Promise.resolve();
-  if (signal?.aborted) return Promise.reject(abortError(signal));
-
-  return new Promise<void>((resolve, reject) => {
-    const timeout = globalThis.setTimeout(() => {
-      finish(() => reject(new Error("Realtime接続がタイムアウトしました。")));
-    }, CONNECTION_TIMEOUT_MS);
-
-    const onStateChange = () => {
-      if (peerConnection.connectionState === "connected") {
-        finish(resolve);
-      } else if (
-        peerConnection.connectionState === "failed" ||
-        peerConnection.connectionState === "closed"
-      ) {
-        finish(() => reject(new Error("Realtimeとの接続を確立できませんでした。")));
-      }
-    };
-    const onAbort = () => finish(() => reject(abortError(signal!)));
-    const finish = (complete: () => void) => {
-      globalThis.clearTimeout(timeout);
-      peerConnection.removeEventListener("connectionstatechange", onStateChange);
-      signal?.removeEventListener("abort", onAbort);
-      complete();
-    };
-
-    peerConnection.addEventListener("connectionstatechange", onStateChange);
-    signal?.addEventListener("abort", onAbort, { once: true });
-    onStateChange();
-  });
-}
 
 function getErrorMessage(payload: ClientSecretResponse, fallback: string) {
   if (typeof payload.error === "string") return payload.error;
@@ -199,7 +113,7 @@ export async function connectTranslation({
   const sourceTrack = sourceStream.getAudioTracks()[0];
   if (!sourceTrack) throw new Error("マイクの音声トラックが見つかりません。");
 
-  const abortScope = createConnectionAbortScope(signal);
+  const abortScope = createConnectionAbortScope(signal, signal ? null : undefined);
   const connectionSignal = abortScope.signal;
 
   const peerConnection = new RTCPeerConnection();
@@ -241,13 +155,16 @@ export async function connectTranslation({
   connectionSignal.addEventListener("abort", close, { once: true });
 
   const clientSecretPromise = withAbort(getClientSecret(targetLanguage), connectionSignal);
-  const localOfferPromise = (async () => {
-    if (connectionSignal.aborted) throw abortError(connectionSignal);
-    const offer = await peerConnection.createOffer();
-    await peerConnection.setLocalDescription(offer);
-    if (!offer.sdp) throw new Error("WebRTC offerを作成できませんでした。");
-    return offer.sdp;
-  })();
+  const localOfferPromise = withAbort(
+    (async () => {
+      if (connectionSignal.aborted) throw abortError(connectionSignal);
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+      if (!offer.sdp) throw new Error("WebRTC offerを作成できませんでした。");
+      return offer.sdp;
+    })(),
+    connectionSignal,
+  );
 
   try {
     const [clientSecret, offerSdp] = await Promise.all([
@@ -271,11 +188,15 @@ export async function connectTranslation({
       throw new Error((await answerResponse.text()) || "WebRTC接続に失敗しました。");
     }
 
-    await peerConnection.setRemoteDescription({
-      type: "answer",
-      sdp: await answerResponse.text(),
-    });
-    await waitForPeerConnection(peerConnection, connectionSignal);
+    const answerSdp = await withAbort(answerResponse.text(), connectionSignal);
+    await withAbort(
+      peerConnection.setRemoteDescription({ type: "answer", sdp: answerSdp }),
+      connectionSignal,
+    );
+    await Promise.all([
+      waitForPeerConnection(peerConnection, connectionSignal, null),
+      waitForDataChannel(events, connectionSignal, null),
+    ]);
     abortScope.clearDeadline();
   } catch (error) {
     close();

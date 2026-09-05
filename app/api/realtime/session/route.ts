@@ -1,4 +1,5 @@
 import type { TargetLanguage } from "@/lib/translation-types";
+import { createClientSecretResponse } from "../../../../lib/realtime-client-secret.ts";
 
 const OPENAI_CLIENT_SECRET_URL =
   "https://api.openai.com/v1/realtime/translations/client_secrets";
@@ -7,11 +8,11 @@ function isTargetLanguage(value: unknown): value is TargetLanguage {
   return value === "ja" || value === "en";
 }
 export async function GET() {
-  return Response.json({ configured: Boolean(process.env.OPENAI_API_KEY) });
+  return Response.json({ configured: Boolean(process.env.OPENAI_API_KEY?.trim()) });
 }
 
 export async function POST(request: Request) {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = process.env.OPENAI_API_KEY?.trim();
 
   if (!apiKey) {
     return Response.json(
@@ -61,9 +62,5 @@ export async function POST(request: Request) {
     }),
   });
 
-  const payload = await upstream.text();
-  return new Response(payload, {
-    status: upstream.status,
-    headers: { "Content-Type": upstream.headers.get("Content-Type") ?? "application/json" },
-  });
+  return createClientSecretResponse(upstream);
 }

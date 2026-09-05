@@ -1,7 +1,7 @@
 # xlator Specification
 
-Last updated: 2026-09-02
-Status: Dual Realtime transcription-and-translation path with locally committed, item-bound row alignment implemented; automated and browser real-audio regression verification completed; translated-audio playback verification pending
+Last updated: 2026-09-05
+Status: Dual Realtime transcription-and-translation path with locally committed, item-bound row alignment implemented; automated verification completed; post-audit browser and translated-audio playback verification pending
 
 ## 1. Purpose
 
@@ -94,11 +94,11 @@ Yep, I'm fine
 - `接続中` (Connecting): The microphone is available and the Realtime sessions are being established.
 - `リスニング中` (Listening): The transcription session and both target-language Translation sessions are connected.
 - `接続エラー` (Connection error): API configuration, microphone access, WebRTC, or a Realtime event failed.
-- A failed required transcription connection prevents startup. When translated audio is requested, a partial Japanese/English audio-session connection also prevents startup.
-- Do not treat setting the SDP answer as a completed connection. Move to `リスニング中` only after the required peer connection, and any audio connections requested at startup, have `connectionState === "connected"`.
-- Apply one 15-second timeout to the full startup sequence, including short-lived secret acquisition, WebRTC offer and SDP answer exchange, and peer connection establishment.
+- A failed transcription connection or either target-language Translation connection prevents startup.
+- Do not treat setting the SDP answer as a completed connection. Move to `リスニング中` only after all three peer connections have `connectionState === "connected"` and their Realtime data channels are open.
+- Apply one shared 15-second timeout to the full startup sequence, including microphone acquisition, short-lived secret acquisition, WebRTC offer and SDP answer exchange, peer connection establishment, and data-channel opening.
 - Stopping while `接続中` must cancel the in-progress WebRTC connection and prevent a late connection from returning the UI to `リスニング中`.
-- If a connected transcription or Translation session receives a Realtime API `error` event, stop the microphone, all WebRTC connections, VAD, and the finalization timer, then move to `接続エラー`.
+- If a connected transcription or Translation session receives a Realtime API `error` event, or the transcription session receives `conversation.item.input_audio_transcription.failed`, stop the microphone, all WebRTC connections, VAD, and the finalization timer, then move to `接続エラー`.
 
 ## 5. Data model
 
@@ -169,7 +169,7 @@ Use these browser-to-OpenAI endpoints:
 - Configure transcription latency through `OPENAI_TRANSCRIPTION_DELAY`. Accept `minimal`, `low`, `medium`, `high`, or `xhigh`; use `minimal` when unset, empty, or invalid.
 - Use `far_field` input noise reduction.
 
-`GET /api/realtime/session` returns only whether a key is configured; it never returns the key value. `POST /api/realtime/transcription` creates a ten-minute transcription secret configured for Japanese and English with low-latency deltas. `POST /api/realtime/session` accepts `ja` or `en` and creates a ten-minute Translation secret for `gpt-realtime-translate`.
+`GET /api/realtime/session` returns only whether a non-empty key is configured; it never returns the key value. `POST /api/realtime/transcription` creates a ten-minute transcription secret configured for Japanese and English with low-latency deltas. `POST /api/realtime/session` accepts `ja` or `en` and creates a ten-minute Translation secret for `gpt-realtime-translate`. Successful secret routes return only `value` and `expires_at`; they do not forward the effective upstream session object.
 
 After the key configuration check succeeds, the browser prefetches the transcription secret and both target-language Translation secrets. It reuses each secret in memory until five seconds before expiration. If prefetching fails or a secret expires, it fetches a replacement when the connection starts. Secrets are not stored in page storage or persisted.
 
@@ -177,7 +177,7 @@ After the key configuration check succeeds, the browser prefetches the transcrip
 
 ### Source transcript
 
-Configure the transcription session with automatic turn detection disabled. Local VAD creates one draft row and commits the input audio buffer after the configured silence interval. Append each `conversation.item.input_audio_transcription.delta` from the dedicated transcription session to that row. Bind the first server `item_id` for each committed turn to the oldest unbound local row, then keep later delta and completion events associated through `item_id`. A new `item_id` never reuses a row already bound to another item. A `conversation.item.input_audio_transcription.completed` event replaces the accumulated source text with the final transcript so that model corrections and normalization are preserved. If local VAD misses speech, the first transcription delta creates and binds the row.
+Configure the transcription session with automatic turn detection disabled. After all required connections are ready, clear audio accumulated during startup and begin local VAD. Local VAD creates one draft row and commits the input audio buffer after the configured silence interval. Bind each `input_audio_buffer.committed` event's server `item_id` to the oldest unbound local row, then keep later delta and completion events associated through `item_id`. Append each `conversation.item.input_audio_transcription.delta` from the dedicated transcription session to that row. A new `item_id` never reuses a row already bound to another item. A `conversation.item.input_audio_transcription.completed` event replaces the accumulated source text with the final transcript so that model corrections and normalization are preserved. If local VAD misses speech, the first transcription delta creates and binds the row.
 
 Classify text containing Japanese characters as `ja`, text containing Latin characters as `en`, and unclassifiable text as `unknown`. After the source language is known, write the source transcript into that language's field and translate only the opposite field.
 
@@ -194,7 +194,7 @@ The current MVP uses debounced local VAD to commit Realtime transcription turns,
 - Require 120 ms of sustained audio above the adaptive RMS threshold before confirming local speech and creating an empty aligned draft row.
 - Infer local speech timing from the microphone's RMS level and a tracking noise floor.
 - Commit the transcription input buffer and finalize the local row after 320 ms of silence when the source candidate ends in sentence punctuation (`。.!！？?…`), or after 450 ms otherwise.
-- If local VAD misses the end, commit and finalize the row after 1.2 seconds without an input-transcript delta. A later transcription completion may still replace the finalized source text.
+- Start a 1.2-second fallback when confirmed local speech creates a row, and restart it after each input-transcript delta. If local VAD misses the end and no new delta arrives before the fallback expires, commit and finalize the row. A later transcription completion may still replace the finalized source text.
 - Remove a locally created row after five seconds if it never receives source text, and remove all such empty rows immediately when the session stops or fails.
 - Associate every Realtime transcription delta and completion event with its committed local row by `item_id`; a distinct item never shares a bound row.
 
@@ -263,14 +263,14 @@ CI does not reproduce a physical microphone. Before a release, manually verify b
 
 | Area | Implementation | Verification | Current treatment |
 | --- | --- | --- | --- |
-| Dual Realtime browser path | Dedicated `gpt-live-transcribe` source transcription plus English-target and Japanese-target `gpt-realtime-translate` text/audio sessions are implemented; locally committed rows, unique `item_id` binding, and target-language candidate buffering preserve alignment | Production build and automated route, item-binding, row-selection, candidate-buffering, alignment, and connection utility tests pass. On 2026-09-02, one browser session received the registered Japanese fixture followed by the English fixture through the microphone: the Japanese greeting and weather sentence occupied two aligned rows, the English sentence occupied a third aligned row, and every source/translation pair used the same row number. A transient empty row disappeared after five seconds and no empty row remained after stopping. | Browser text alignment and empty-row cleanup are verified with the two basic real-audio fixtures; translated-audio playback, natural alternating conversation, and representative latency remain pending |
-| Live API sanity | The server can create transcription and Translation client secrets | On 2026-09-01, both secret request types returned 200. One real-audio transcription run per direction succeeded with `minimal` delay and `languages: ["en", "ja"]`: Japanese first delta 3,186 ms and English 2,387 ms. | API components verified individually; the new three-session browser composition is not verified |
-| Normal CI | GitHub Actions runs `npm run verify` | Lint, type checking, build, and 33 tests pass locally on the current change branch | Required pull request quality gate |
+| Dual Realtime browser path | Dedicated `gpt-live-transcribe` source transcription plus English-target and Japanese-target `gpt-realtime-translate` text/audio sessions are implemented; locally committed rows, commit-event `item_id` binding, target-language candidate buffering, one full-startup deadline, and late-resource cleanup preserve alignment and lifecycle safety | Production build and automated route, item-binding, row-selection, candidate-buffering, alignment, startup-cancellation, data-channel, and connection utility tests pass. On 2026-09-02, the earlier implementation received the registered Japanese fixture followed by the English fixture through the microphone with aligned rows and empty-row cleanup. The lifecycle and commit-binding fixes from the implementation-to-spec audit have not yet been repeated with a physical microphone. | Automated verification passes; post-audit browser text, translated-audio playback, natural alternating conversation, and representative latency field verification remain pending |
+| Live API sanity | The server can create transcription and Translation client secrets | On 2026-09-01, both secret request types returned 200. One real-audio transcription run per direction succeeded with `minimal` delay and `languages: ["en", "ja"]`: Japanese first delta 3,186 ms and English 2,387 ms. | API components verified individually; the post-audit three-session browser composition still needs field re-verification |
+| Normal CI | GitHub Actions runs `npm run verify` | On 2026-09-05, lint, type checking, the production build, and 36 tests passed locally; `npm audit` reported no known vulnerabilities after the runtime and build-tool maintenance update | Required pull request quality gate |
 | Live-API smoke CLI | WAV conversion, WebSocket streaming, CER/WER, translation terms, translated audio, repeated runs, p50/p95 summaries, latency comparison, and clean closure checks are implemented | On 2026-09-01, both registered cases ran ten times locally. On 2026-09-02, one regression run per direction again returned source text, translation text, translated audio, and clean session closure. The command exited nonzero on translation error-rate and required-term assertions; the English-to-Japanese output omitted the required greeting. | Covers the same Translation model and output events as the browser, but uses the Translation session's optional input transcript instead of the browser's dedicated transcription session |
 | Real-audio fixture | Japanese-to-English and English-to-Japanese real-speech WAV files and reference data are registered | The local `--validate-only` check passes, and both files were processed successfully in ten live runs per direction | Human confirmation of the Japanese reference is pending because all ten live transcripts included `とても`, which is absent from the current reference; mixed-language, numbers, dates, times, and proper-noun coverage remains incomplete |
 | Browser latency diagnostics | Speech-to-source-display, speech-to-translation-display, and silence-to-row-final measurements are implemented without storing transcript content | Pure timing calculations and the production build pass automated verification | Dual Realtime physical-microphone measurements have not been collected |
 | Manual GitHub Actions workflow | The `workflow_dispatch` `Realtime API Smoke` workflow is implemented | Normal CI passes after adding the workflow; a live GitHub Actions run has not been performed | API key registration and execution from the default branch remain incomplete |
-| Physical microphone verification | Manual procedure is defined in `docs/realtime-smoke.md` | On 2026-09-02, speaker playback of the two basic fixtures through the browser microphone path verified muted-mode text alignment and stopping; natural speech and translated-audio playback were not tested | Manual pre-release check, not automated CI |
+| Physical microphone verification | Manual procedure is defined in `docs/realtime-smoke.md` | On 2026-09-02, speaker playback of the two basic fixtures through the earlier browser implementation verified muted-mode text alignment and stopping; natural speech and translated-audio playback were not tested, and the audited connection/item-binding changes have not received a new physical-microphone run | Manual pre-release check, not automated CI |
 
 ### Remaining work and completion conditions
 
@@ -287,6 +287,7 @@ CI does not reproduce a physical microphone. Before a release, manually verify b
    - Complete the six steps in `docs/realtime-smoke.md`.
    - The 2026-09-02 fixture-playback run verified that transcription and both Translation sessions connect in `再生しない`, opposite-language text stays aligned across Japanese then English input, transient empty rows are removed, and stopping preserves only populated rows.
    - Repeat the muted-mode check with natural speech and at least three alternating utterances.
+   - Re-run the basic fixtures against the audited shared-startup timeout, startup-buffer clearing, data-channel readiness, and `input_audio_buffer.committed` item binding.
    - With playback enabled, verify alternating Japanese/English speech, one row per transcription `item_id`, no persistent empty rows, opposite-language translated audio, live mute-mode changes without reconnection, and stopping both during and after connection.
 4. Tune thresholds using the first measured results.
    - The 2026-09-01 direct-Translation benchmark measured Japanese-to-English source p50/p95 at 3,904/4,920 ms, translation at 4,199/10,364 ms, and paired translation-minus-source at 294/6,207 ms. Translation was the median critical path and had the largest tail.
@@ -340,6 +341,8 @@ lib/demo-utterances.ts                   Initial-screen fixture
 lib/download-log.ts                      TXT / CSV / JSON / SRT generation
 lib/browser-latency.ts                   Browser latency measurement records
 lib/local-vad.ts                         Pure VAD silence-duration logic
+lib/realtime-client-secret.ts            Validated short-lived secret responses
+lib/realtime-connection.ts               Shared startup cancellation, deadline, and connection-readiness utilities
 lib/realtime-transcription.ts            Realtime transcription WebRTC connection
 lib/realtime-translation.ts              Realtime translated text/audio WebRTC connection
 lib/translation-types.ts                 Shared data types

@@ -66,6 +66,23 @@ export function findReusableTranscriptionRow(
   return null;
 }
 
+export function bindTranscriptionItemToOldestRow(
+  itemId: string,
+  itemRows: Map<string, string>,
+  rowItems: Map<string, string>,
+  unboundRowIds: readonly string[],
+) {
+  const existingRowId = itemRows.get(itemId);
+  if (existingRowId) return existingRowId;
+
+  const rowId = unboundRowIds.find((candidate) => !rowItems.has(candidate));
+  if (!rowId) return null;
+
+  itemRows.set(itemId, rowId);
+  rowItems.set(rowId, itemId);
+  return rowId;
+}
+
 export function findTranslationRowIndex(
   rows: Utterance[],
   activeRowId: string | null,

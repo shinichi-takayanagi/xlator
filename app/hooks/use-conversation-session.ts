@@ -8,6 +8,12 @@ import {
 } from "@/lib/browser-latency";
 import { DEMO_UTTERANCES } from "@/lib/demo-utterances";
 import {
+  CONNECTION_TIMEOUT_MS,
+  createConnectionAbortScope,
+  withAbortCleanup,
+  type ConnectionAbortScope,
+} from "@/lib/realtime-connection";
+import {
   connectTranscription,
   prefetchTranscriptionClientSecret,
   type TranscriptionConnection,
@@ -20,9 +26,11 @@ import {
   type TranslationEvent,
 } from "@/lib/realtime-translation";
 import type { Language, TargetLanguage, Utterance } from "@/lib/translation-types";
+import { NO_TRANSCRIPT_FINALIZE_MS } from "@/lib/local-vad";
 import {
   alignSourceAndTranslation,
   appendTranslationCandidate,
+  bindTranscriptionItemToOldestRow,
   createLiveUtterance,
   detectLanguage,
   findReusableTranscriptionRow,
@@ -33,7 +41,6 @@ import {
 export type AudioMode = "off" | "ja" | "en" | "auto";
 export type ConnectionStatus = "idle" | "connecting" | "live" | "error";
 
-const FALLBACK_FINALIZE_MS = 1_200;
 const EMPTY_ROW_CLEANUP_MS = 5_000;
 const PENDING_TRANSLATION_MAX_AGE_MS = 3_000;
 
@@ -53,7 +60,7 @@ export function useConversationSession() {
 
   const transcriptionConnectionRef = useRef<TranscriptionConnection | null>(null);
   const translationConnectionsRef = useRef<TranslationConnection[]>([]);
-  const startAbortControllerRef = useRef<AbortController | null>(null);
+  const startAbortScopeRef = useRef<ConnectionAbortScope | null>(null);
   const sourceStreamRef = useRef<MediaStream | null>(null);
   const rowsRef = useRef(rows);
   const activeRowIdRef = useRef<string | null>(null);
@@ -68,6 +75,7 @@ export function useConversationSession() {
   const activeSourceTextRef = useRef("");
   const sessionStartedAtRef = useRef(0);
   const lastSourceLanguageRef = useRef<Language | "unknown">("unknown");
+  const playbackRowIdRef = useRef<string | null>(null);
   const audioModeRef = useRef<AudioMode>("off");
   const speechStartedAtRef = useRef<number | null>(null);
   const speechStartedAtByRowRef = useRef(new Map<string, number>());
@@ -138,10 +146,20 @@ export function useConversationSession() {
   }, [isListening]);
 
   useEffect(() => {
-    fetch("/api/realtime/session")
-      .then((response) => response.json())
-      .then((payload: { configured?: boolean }) => setApiConfigured(Boolean(payload.configured)))
-      .catch(() => setApiConfigured(false));
+    const controller = new AbortController();
+    void fetch("/api/realtime/session", { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("起動設定を確認できませんでした。");
+        return response.json() as Promise<{ configured?: boolean }>;
+      })
+      .then((payload) => setApiConfigured(Boolean(payload.configured)))
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setApiConfigured(null);
+        setErrorMessage("起動設定を確認できませんでした。");
+        setConnectionStatus("error");
+      });
+    return () => controller.abort();
   }, []);
 
   useEffect(() => {
@@ -206,6 +224,11 @@ export function useConversationSession() {
       activeRowIdRef.current = null;
       activeSourceTextRef.current = "";
     }
+    if (playbackRowIdRef.current === rowId) {
+      playbackRowIdRef.current = null;
+      lastSourceLanguageRef.current = "unknown";
+      queueMicrotask(syncAudioOutputs);
+    }
 
     updateRows((current) => {
       const next = current
@@ -217,7 +240,7 @@ export function useConversationSession() {
         ));
       return next;
     });
-  }, [clearEmptyRowCleanup, updateRows]);
+  }, [clearEmptyRowCleanup, syncAudioOutputs, updateRows]);
 
   const scheduleEmptyRowCleanup = useCallback((rowId: string) => {
     clearEmptyRowCleanup(rowId);
@@ -259,6 +282,7 @@ export function useConversationSession() {
       `live-${sessionStartedAtRef.current}-${++rowIdCounterRef.current}`,
     );
     activeRowIdRef.current = row.id;
+    playbackRowIdRef.current = row.id;
     const speechStartedAt = speechStartedAtRef.current;
     if (speechStartedAt !== null) {
       speechStartedAtByRowRef.current.set(row.id, speechStartedAt);
@@ -281,6 +305,20 @@ export function useConversationSession() {
     return row.id;
   }, [scheduleEmptyRowCleanup, updateRows]);
 
+  const bindTranscriptionItem = useCallback((itemId: string) => {
+    const rowId = bindTranscriptionItemToOldestRow(
+      itemId,
+      transcriptionItemRowsRef.current,
+      transcriptionRowItemsRef.current,
+      unboundTranscriptionRowsRef.current,
+    );
+    if (rowId) {
+      unboundTranscriptionRowsRef.current = unboundTranscriptionRowsRef.current
+        .filter((candidate) => candidate !== rowId);
+    }
+    return rowId;
+  }, []);
+
   const ensureTranscriptionRow = useCallback((
     itemId: string | undefined,
     elapsedMs: number,
@@ -294,10 +332,7 @@ export function useConversationSession() {
     );
     if (reusableRowId) {
       if (itemId && !transcriptionRowItemsRef.current.has(reusableRowId)) {
-        transcriptionItemRowsRef.current.set(itemId, reusableRowId);
-        transcriptionRowItemsRef.current.set(reusableRowId, itemId);
-        unboundTranscriptionRowsRef.current = unboundTranscriptionRowsRef.current
-          .filter((candidate) => candidate !== reusableRowId);
+        bindTranscriptionItem(itemId);
       }
       return reusableRowId;
     }
@@ -306,13 +341,10 @@ export function useConversationSession() {
     if (previousActiveRowId) finalizeRow(previousActiveRowId);
     const rowId = createActiveRow(elapsedMs);
     if (itemId) {
-      transcriptionItemRowsRef.current.set(itemId, rowId);
-      transcriptionRowItemsRef.current.set(rowId, itemId);
-      unboundTranscriptionRowsRef.current = unboundTranscriptionRowsRef.current
-        .filter((candidate) => candidate !== rowId);
+      bindTranscriptionItem(itemId);
     }
     return rowId;
-  }, [createActiveRow, finalizeRow]);
+  }, [bindTranscriptionItem, createActiveRow, finalizeRow]);
 
   const commitTranscriptionRow = useCallback((rowId: string) => {
     if (committedTranscriptionRowsRef.current.has(rowId)) return;
@@ -320,6 +352,15 @@ export function useConversationSession() {
       committedTranscriptionRowsRef.current.add(rowId);
     }
   }, []);
+
+  const scheduleFallbackFinalization = useCallback((rowId: string) => {
+    if (finalizeTimerRef.current) window.clearTimeout(finalizeTimerRef.current);
+    finalizeTimerRef.current = window.setTimeout(() => {
+      if (activeRowIdRef.current !== rowId) return;
+      commitTranscriptionRow(rowId);
+      finalizeRow(rowId);
+    }, NO_TRANSCRIPT_FINALIZE_MS);
+  }, [commitTranscriptionRow, finalizeRow]);
 
   const getActiveSourceText = useCallback(() => activeSourceTextRef.current, []);
   const handleVadSpeechStart = useCallback((at: number) => {
@@ -330,14 +371,16 @@ export function useConversationSession() {
     }
     beginSpeechMeasurement(at);
     const elapsedMs = Math.max(0, Date.now() - sessionStartedAtRef.current);
-    createActiveRow(elapsedMs);
+    const rowId = createActiveRow(elapsedMs);
     lastSourceLanguageRef.current = "unknown";
     queueMicrotask(syncAudioOutputs);
+    scheduleFallbackFinalization(rowId);
   }, [
     beginSpeechMeasurement,
     commitTranscriptionRow,
     createActiveRow,
     finalizeRow,
+    scheduleFallbackFinalization,
     syncAudioOutputs,
   ]);
   const handleVadSilenceStart = useCallback((at: number) => {
@@ -376,8 +419,10 @@ export function useConversationSession() {
   }, []);
 
   const closeRealtimeResources = useCallback(() => {
-    startAbortControllerRef.current?.abort();
-    startAbortControllerRef.current = null;
+    const startAbortScope = startAbortScopeRef.current;
+    startAbortScopeRef.current = null;
+    startAbortScope?.abort();
+    startAbortScope?.dispose();
     closeTranslationConnections();
     stopLocalVad();
     activeSourceTextRef.current = "";
@@ -444,13 +489,14 @@ export function useConversationSession() {
 
       if (row.id === activeRowIdRef.current) {
         activeSourceTextRef.current = sourceText;
-        if (
-          sourceLanguage !== "unknown" &&
-          sourceLanguage !== lastSourceLanguageRef.current
-        ) {
-          lastSourceLanguageRef.current = sourceLanguage;
-          queueMicrotask(syncAudioOutputs);
-        }
+      }
+      if (
+        row.id === playbackRowIdRef.current &&
+        sourceLanguage !== "unknown" &&
+        sourceLanguage !== lastSourceLanguageRef.current
+      ) {
+        lastSourceLanguageRef.current = sourceLanguage;
+        queueMicrotask(syncAudioOutputs);
       }
 
       return replaceRow(current, index, {
@@ -470,28 +516,23 @@ export function useConversationSession() {
         discardEmptyRow(rowId);
       }
     } else if (isActiveRow) {
-      if (finalizeTimerRef.current) window.clearTimeout(finalizeTimerRef.current);
-      finalizeTimerRef.current = window.setTimeout(
-        () => {
-          commitTranscriptionRow(rowId);
-          finalizeRow(rowId);
-        },
-        FALLBACK_FINALIZE_MS,
-      );
+      scheduleFallbackFinalization(rowId);
     }
   }, [
     clearEmptyRowCleanup,
-    commitTranscriptionRow,
     discardEmptyRow,
     ensureTranscriptionRow,
     finalizeRow,
     markSpeechDetected,
+    scheduleFallbackFinalization,
     syncAudioOutputs,
     updateRows,
   ]);
 
   const handleTranscriptionEvent = useCallback((event: TranscriptionEvent) => {
-    if (event.type === "input_audio_buffer.speech_started") {
+    if (event.type === "input_audio_buffer.committed" && event.item_id) {
+      bindTranscriptionItem(event.item_id);
+    } else if (event.type === "input_audio_buffer.speech_started") {
       const measurementStartedAt = speechStartedAtRef.current ?? performance.now();
       const elapsedMs = typeof event.audio_start_ms === "number"
         ? event.audio_start_ms + transcriptionClockOffsetRef.current
@@ -502,22 +543,28 @@ export function useConversationSession() {
       lastSourceLanguageRef.current = "unknown";
       queueMicrotask(syncAudioOutputs);
       markSpeechDetected();
+      scheduleFallbackFinalization(rowId);
     } else if (event.type === "conversation.item.input_audio_transcription.delta") {
       handleTranscriptionText(event, false);
     } else if (
       event.type === "conversation.item.input_audio_transcription.completed"
     ) {
       handleTranscriptionText(event, true);
-    } else if (event.type === "error") {
+    } else if (
+      event.type === "error" ||
+      event.type === "conversation.item.input_audio_transcription.failed"
+    ) {
       failSession(
         event.error?.message ?? "Realtime文字起こし中にエラーが発生しました。",
       );
     }
   }, [
+    bindTranscriptionItem,
     ensureTranscriptionRow,
     failSession,
     handleTranscriptionText,
     markSpeechDetected,
+    scheduleFallbackFinalization,
     syncAudioOutputs,
   ]);
 
@@ -601,7 +648,9 @@ export function useConversationSession() {
           sourceStream,
           muted: true,
           signal,
-          onEvent: handleTranslationEvent,
+          onEvent: (language, event) => {
+            if (!signal.aborted) handleTranslationEvent(language, event);
+          },
           onConnectionState: (_language, state) => {
             if (state === "failed" && !signal.aborted) {
               failSession("Realtime翻訳との接続が切れました。");
@@ -635,7 +684,7 @@ export function useConversationSession() {
 
   const startConversation = async () => {
     if (apiConfigured === false) {
-      setConnectionStatus("error");
+      setConnectionStatus("idle");
       setErrorMessage("OPENAI_API_KEY が設定されていません。.env.local を設定してサーバーを再起動してください。");
       return;
     }
@@ -658,6 +707,7 @@ export function useConversationSession() {
     pendingTranslationsRef.current.clear();
     translationClockOffsetsRef.current.clear();
     lastSourceLanguageRef.current = "unknown";
+    playbackRowIdRef.current = null;
     activeSourceTextRef.current = "";
     speechStartedAtRef.current = null;
     silenceStartedAtRef.current = null;
@@ -667,23 +717,27 @@ export function useConversationSession() {
     pendingFinalizationLatencyRef.current = null;
     resetBrowserLatencyMeasurements();
     sessionStartedAtRef.current = Date.now();
-    const startAbortController = new AbortController();
-    startAbortControllerRef.current = startAbortController;
+    const startAbortScope = createConnectionAbortScope(
+      undefined,
+      CONNECTION_TIMEOUT_MS,
+    );
+    startAbortScopeRef.current = startAbortScope;
+    const { signal } = startAbortScope;
 
     try {
-      const sourceStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
-      if (startAbortController.signal.aborted) {
-        sourceStream.getTracks().forEach((track) => track.stop());
-        return;
-      }
+      const sourceStream = await withAbortCleanup(
+        navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        }),
+        signal,
+        (lateStream) => lateStream.getTracks().forEach((track) => track.stop()),
+      );
+      if (signal.aborted) return;
       sourceStreamRef.current = sourceStream;
-      startLocalVad(sourceStream);
 
       transcriptionClockOffsetRef.current = Math.max(
         0,
@@ -691,34 +745,55 @@ export function useConversationSession() {
       );
       const transcriptionPromise = connectTranscription({
         sourceStream,
-        signal: startAbortController.signal,
-        onEvent: handleTranscriptionEvent,
+        signal,
+        onEvent: (event) => {
+          if (!signal.aborted) handleTranscriptionEvent(event);
+        },
         onConnectionState: (state) => {
-          if (state === "failed" && !startAbortController.signal.aborted) {
+          if (state === "failed" && !signal.aborted) {
             failSession("Realtime文字起こしとの接続が切れました。");
           }
         },
       }).then((connection) => {
+        if (signal.aborted) {
+          connection.close();
+          return;
+        }
         transcriptionConnectionRef.current = connection;
       });
       const translationPromise = connectTranslationSessions(
         sourceStream,
-        startAbortController.signal,
+        signal,
       );
       await Promise.all([transcriptionPromise, translationPromise]);
 
-      if (startAbortController.signal.aborted) return;
+      if (signal.aborted || startAbortScopeRef.current !== startAbortScope) return;
+      startAbortScope.clearDeadline();
+      if (!transcriptionConnectionRef.current?.clear()) {
+        throw new Error("Realtime文字起こしを開始できませんでした。");
+      }
+      pendingTranslationsRef.current.clear();
+      translationCandidatesRef.current.clear();
+      startLocalVad(sourceStream);
       setApiConfigured(true);
       setConnectionStatus("live");
       setIsListening(true);
     } catch (error) {
-      if (startAbortController.signal.aborted) return;
-      closeRealtimeResources();
+      if (startAbortScopeRef.current !== startAbortScope) return;
+      if (
+        error instanceof DOMException &&
+        error.name === "AbortError" &&
+        signal.reason instanceof DOMException &&
+        signal.reason.name === "AbortError"
+      ) {
+        return;
+      }
       const message = error instanceof Error ? error.message : "接続を開始できませんでした。";
-      setErrorMessage(message);
-      setConnectionStatus("error");
-      setIsListening(false);
-      if (message.includes("OPENAI_API_KEY")) setApiConfigured(false);
+      failSession(message);
+      if (message.includes("OPENAI_API_KEY")) {
+        setApiConfigured(false);
+        setConnectionStatus("idle");
+      }
     }
   };
 

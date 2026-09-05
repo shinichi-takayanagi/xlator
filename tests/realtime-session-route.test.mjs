@@ -15,6 +15,8 @@ test.afterEach(() => {
 test("reports whether the server API key is configured", async () => {
   delete process.env.OPENAI_API_KEY;
   assert.deepEqual(await (await GET()).json(), { configured: false });
+  process.env.OPENAI_API_KEY = "   ";
+  assert.deepEqual(await (await GET()).json(), { configured: false });
   process.env.OPENAI_API_KEY = "server-only-test-key";
   assert.deepEqual(await (await GET()).json(), { configured: true });
 });
@@ -43,7 +45,11 @@ test("creates a ten-minute translation secret without duplicate transcription", 
   let upstreamRequest;
   globalThis.fetch = async (url, init) => {
     upstreamRequest = { url, init };
-    return Response.json({ value: "short-lived-secret", expires_at: 1234 });
+    return Response.json({
+      value: "short-lived-secret",
+      expires_at: 1234,
+      session: { model: "gpt-realtime-translate" },
+    });
   };
 
   const response = await POST(new Request("http://localhost/api/realtime/session", {
@@ -52,7 +58,10 @@ test("creates a ten-minute translation secret without duplicate transcription", 
     body: JSON.stringify({ targetLanguage: "ja" }),
   }));
   assert.equal(response.status, 200);
-  assert.equal((await response.json()).value, "short-lived-secret");
+  assert.deepEqual(await response.json(), {
+    value: "short-lived-secret",
+    expires_at: 1234,
+  });
   assert.equal(upstreamRequest.url, "https://api.openai.com/v1/realtime/translations/client_secrets");
   assert.equal(upstreamRequest.init.headers.Authorization, "Bearer server-only-test-key");
 

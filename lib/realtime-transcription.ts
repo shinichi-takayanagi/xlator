@@ -1,8 +1,10 @@
 import {
+  abortError,
   createConnectionAbortScope,
+  waitForDataChannel,
   waitForPeerConnection,
   withAbort,
-} from "./realtime-translation";
+} from "./realtime-connection";
 
 export type TranscriptionEvent = {
   type: string;
@@ -15,6 +17,7 @@ export type TranscriptionEvent = {
 
 export type TranscriptionConnection = {
   close: () => void;
+  clear: () => boolean;
   commit: () => boolean;
 };
 
@@ -39,12 +42,6 @@ type CachedClientSecret = {
 const CLIENT_SECRET_EXPIRY_SKEW_MS = 5_000;
 let cachedClientSecret: CachedClientSecret | null = null;
 let pendingClientSecret: Promise<string> | null = null;
-
-function abortError(signal: AbortSignal) {
-  return signal.reason instanceof Error
-    ? signal.reason
-    : new DOMException("接続がキャンセルされました。", "AbortError");
-}
 
 function getErrorMessage(payload: ClientSecretResponse, fallback: string) {
   if (typeof payload.error === "string") return payload.error;
@@ -104,7 +101,7 @@ export async function connectTranscription({
   const sourceTrack = sourceStream.getAudioTracks()[0];
   if (!sourceTrack) throw new Error("マイクの音声トラックが見つかりません。");
 
-  const abortScope = createConnectionAbortScope(signal);
+  const abortScope = createConnectionAbortScope(signal, signal ? null : undefined);
   const connectionSignal = abortScope.signal;
   const peerConnection = new RTCPeerConnection();
   peerConnection.addTrack(sourceTrack, sourceStream);
@@ -134,13 +131,16 @@ export async function connectTranscription({
   connectionSignal.addEventListener("abort", close, { once: true });
 
   const clientSecretPromise = withAbort(getClientSecret(), connectionSignal);
-  const localOfferPromise = (async () => {
-    if (connectionSignal.aborted) throw abortError(connectionSignal);
-    const offer = await peerConnection.createOffer();
-    await peerConnection.setLocalDescription(offer);
-    if (!offer.sdp) throw new Error("WebRTC offerを作成できませんでした。");
-    return offer.sdp;
-  })();
+  const localOfferPromise = withAbort(
+    (async () => {
+      if (connectionSignal.aborted) throw abortError(connectionSignal);
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+      if (!offer.sdp) throw new Error("WebRTC offerを作成できませんでした。");
+      return offer.sdp;
+    })(),
+    connectionSignal,
+  );
 
   try {
     const [clientSecret, offerSdp] = await Promise.all([
@@ -161,11 +161,15 @@ export async function connectTranscription({
       throw new Error((await answerResponse.text()) || "WebRTC接続に失敗しました。");
     }
 
-    await peerConnection.setRemoteDescription({
-      type: "answer",
-      sdp: await answerResponse.text(),
-    });
-    await waitForPeerConnection(peerConnection, connectionSignal);
+    const answerSdp = await withAbort(answerResponse.text(), connectionSignal);
+    await withAbort(
+      peerConnection.setRemoteDescription({ type: "answer", sdp: answerSdp }),
+      connectionSignal,
+    );
+    await Promise.all([
+      waitForPeerConnection(peerConnection, connectionSignal, null),
+      waitForDataChannel(events, connectionSignal, null),
+    ]);
     abortScope.clearDeadline();
   } catch (error) {
     close();
@@ -174,6 +178,15 @@ export async function connectTranscription({
 
   return {
     close,
+    clear() {
+      if (closed || events.readyState !== "open") return false;
+      try {
+        events.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
+        return true;
+      } catch {
+        return false;
+      }
+    },
     commit() {
       if (closed || events.readyState !== "open") return false;
       try {
