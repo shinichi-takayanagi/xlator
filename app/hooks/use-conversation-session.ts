@@ -231,9 +231,11 @@ export function useConversationSession() {
     const speechEndMs = silenceStartedAtRef.current === null
       ? elapsedMs
       : Math.max(0, elapsedMs - (performance.now() - silenceStartedAtRef.current));
-    const rowHasSource = Boolean(
-      rowsRef.current.find((row) => row.id === rowId)?.sourceText?.trim(),
-    );
+    const row = rowsRef.current.find((candidate) => candidate.id === rowId);
+    if (row && row.speechEndMs === undefined && silenceStartedAtRef.current !== null) {
+      latencyRef.current.speechEnded(row, silenceStartedAtRef.current, performance.now());
+    }
+    const rowHasSource = Boolean(row?.sourceText?.trim());
     if (rowHasSource) clearEmptyRowCleanup(rowId);
     updateRows((current) => {
       const index = current.findIndex((row) => row.id === rowId);
@@ -396,11 +398,6 @@ export function useConversationSession() {
   }, []);
   const handleVadSpeechEnd = useCallback(() => {
     const rowId = activeRowIdRef.current;
-    const startedAt = silenceStartedAtRef.current;
-    if (rowId && startedAt !== null) {
-      const row = rowsRef.current.find((candidate) => candidate.id === rowId);
-      if (row) latencyRef.current.speechEnded(row, startedAt, performance.now());
-    }
     if (rowId) {
       commitTranscriptionRow(rowId);
       finalizeRow(rowId);
@@ -547,7 +544,7 @@ export function useConversationSession() {
       const elapsedMs = typeof event.audio_start_ms === "number"
         ? event.audio_start_ms + transcriptionClockOffsetRef.current
         : Math.max(0, Date.now() - sessionStartedAtRef.current);
-      const rowId = ensureTranscriptionRow(event.item_id, elapsedMs);
+      ensureTranscriptionRow(event.item_id, elapsedMs);
       lastSourceLanguageRef.current = "unknown";
       queueMicrotask(syncAudioOutputs);
       if (!stoppingRef.current) markSpeechDetected();
