@@ -2,7 +2,7 @@ import type { TargetLanguage, Utterance } from "./translation-types";
 
 export type TranslationCandidates = Partial<Record<TargetLanguage, string>>;
 
-const TRANSLATION_ROW_LOOKAHEAD_MS = 250;
+const TRANSLATION_TIMESTAMP_RESOLUTION_MS = 200;
 const TRANSLATION_ROW_STALE_MS = 3_000;
 
 export function createLiveUtterance(
@@ -89,23 +89,26 @@ export function findTranslationRowIndex(
   elapsedMs?: number,
 ) {
   if (rows.length === 0) return -1;
+  if (elapsedMs === undefined) {
+    // An active row alone does not identify a delayed, untimed output fragment.
+    return rows.length === 1 && rows[0].id === activeRowId ? 0 : -1;
+  }
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 0) return -1;
 
-  const activeIndex = activeRowId
-    ? rows.findIndex((row) => row.id === activeRowId)
-    : -1;
-  if (activeIndex >= 0 || elapsedMs === undefined) return activeIndex;
-
-  const timedIndex = findLastRowStartingAtOrBefore(
-    rows,
-    elapsedMs + TRANSLATION_ROW_LOOKAHEAD_MS,
-  );
-  if (timedIndex < 0) return activeIndex;
+  let timedIndex = findLastRowStartingAtOrBefore(rows, elapsedMs);
+  if (timedIndex < 0) {
+    // Allow coarse timestamps just before the first local VAD confirmation.
+    // Never look ahead across an existing row's next-turn boundary.
+    if ((rows[0].startMs ?? 0) - elapsedMs > TRANSLATION_TIMESTAMP_RESOLUTION_MS) {
+      return -1;
+    }
+    timedIndex = 0;
+  }
 
   const timedRow = rows[timedIndex];
-  const timedEndMs = timedRow.endMs ?? timedRow.startMs ?? 0;
+  const timedEndMs = timedRow.speechEndMs ?? timedRow.endMs ?? timedRow.startMs ?? 0;
   if (
-    timedIndex === rows.length - 1 &&
-    timedIndex !== activeIndex &&
+    timedRow.id !== activeRowId &&
     elapsedMs > timedEndMs + TRANSLATION_ROW_STALE_MS
   ) {
     return -1;

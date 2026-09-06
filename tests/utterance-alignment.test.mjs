@@ -127,15 +127,33 @@ test("binds committed item IDs before out-of-order transcript events arrive", ()
   );
 });
 
-test("assigns translation only to an existing current row", () => {
+test("uses translation timing before the active row and rejects ambiguous untimed output", () => {
   const rows = [
     { id: "row-1", sequence: 1, at: "00:01", sourceLanguage: "ja", startMs: 1_000, endMs: 2_000, ja: "一", en: "one", status: "final" },
     { id: "row-2", sequence: 2, at: "00:04", sourceLanguage: "en", startMs: 4_000, endMs: 4_500, ja: "二", en: "two", status: "draft" },
   ];
 
   assert.equal(findTranslationRowIndex([], null, 1_000), -1);
-  assert.equal(findTranslationRowIndex(rows, "row-2"), 1);
-  assert.equal(findTranslationRowIndex(rows, "row-2", 1_500), 1);
+  assert.equal(findTranslationRowIndex(rows, "row-2"), -1);
+  assert.equal(findTranslationRowIndex(rows, "row-2", 1_500), 0);
   assert.equal(findTranslationRowIndex(rows, "row-2", 4_100), 1);
   assert.equal(findTranslationRowIndex(rows, null, 8_000), -1);
+});
+
+
+test("does not look ahead across a turn boundary and uses acoustic rather than source arrival end", () => {
+  const rows = [
+    { ...createLiveUtterance(1, 1_000, "A"), speechEndMs: 2_000, endMs: 9_000 },
+    { ...createLiveUtterance(2, 8_000, "B"), speechEndMs: 9_000 },
+  ];
+  assert.equal(findTranslationRowIndex(rows, "B", 800), 0);
+  assert.equal(findTranslationRowIndex(rows, "B", 799), -1);
+  assert.equal(findTranslationRowIndex(rows, "B", 5_000), 0);
+  assert.equal(findTranslationRowIndex(rows, "B", 5_001), -1);
+  assert.equal(findTranslationRowIndex(rows, "B", 7_999), -1);
+  assert.equal(findTranslationRowIndex(rows, "B", 8_000), 1);
+  assert.equal(findTranslationRowIndex(rows, "B", Number.NaN), -1);
+  assert.equal(findTranslationRowIndex(rows, "B", -1), -1);
+  const nearby = [rows[0], { ...rows[1], startMs: 4_000 }];
+  assert.equal(findTranslationRowIndex(nearby, "B", 3_999), 0);
 });
