@@ -86,3 +86,20 @@ for (const boundary of ["watchdog", "stop"]) {
     assert.equal(window.__xlatorLatency.filter((record) => record.metric === "source-completed-to-dom").length, 1);
   });
 }
+
+test("mounted buffered translation measures from its original receipt before row creation", async (t) => {
+  const h = await mountConversation(t, panels);
+  await h.start();
+  await act(async () => h.translations.find((connection) => connection.targetLanguage === "en").onEvent("en", {
+    type: "session.output_transcript.delta", delta: "Hello", elapsed_ms: 0,
+  }));
+  await h.advance(100);
+  await h.speech();
+  await h.advance(200);
+  await h.event(delta("こんにちは"));
+  assert.equal(list("en").querySelector("p").textContent, "Hello");
+  assert.deepEqual(window.__xlatorLatency.filter((record) => record.metric === "translation-receipt-to-adoption"), [
+    { sequence: 1, metric: "translation-receipt-to-adoption", durationMs: 300 },
+  ]);
+  assert.equal(window.__xlatorLatency.some((record) => record.metric === "speech-to-translation-receipt"), false);
+});
