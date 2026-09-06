@@ -28,8 +28,15 @@ export function createLiveUtterance(
 }
 
 export function detectLanguage(text: string): TargetLanguage | "unknown" {
-  if (/[\u3040-\u30ff\u3400-\u9fff]/u.test(text)) return "ja";
-  if (/[A-Za-z]/.test(text)) return "en";
+  const japanese = text.match(/[\u3040-\u30ff\u3400-\u9fff]/gu)?.length ?? 0;
+  const latinWords = text.match(/[A-Za-z]+/g) ?? [];
+  const latin = latinWords.join("").length;
+  if (!japanese) return latin ? "en" : "unknown";
+  if (!latin) return "ja";
+  // Hiragana supplies grammatical context; katakana names alone do not.
+  if (/[\u3041-\u3096]/u.test(text)) return "ja";
+  if (latinWords.length >= 2 && latin > japanese) return "en";
+  if (japanese >= latin) return "ja";
   return "unknown";
 }
 
@@ -133,10 +140,11 @@ export function alignSourceAndTranslation(
   sourceLanguage: TargetLanguage | "unknown",
   translations: TranslationCandidates,
 ) {
+  if (sourceLanguage === "unknown") return { ja: "", en: "" };
+
   let ja = row.ja;
   let en = row.en;
   if (
-    sourceLanguage !== "unknown" &&
     row.sourceLanguage !== "unknown" &&
     sourceLanguage !== row.sourceLanguage
   ) {

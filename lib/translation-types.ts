@@ -6,6 +6,7 @@ export type Utterance = {
   sequence: number;
   at: string;
   sourceLanguage: Language | "unknown";
+  sourceLanguageStatus?: "pending" | "provisional" | "final";
   sourceText?: string;
   startMs?: number;
   endMs?: number;

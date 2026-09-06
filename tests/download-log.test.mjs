@@ -38,3 +38,13 @@ test("creates readable text and structured JSON", () => {
   const json = JSON.parse(createDownloadContent(rows, "json").content);
   assert.deepEqual(json, rows);
 });
+
+test("preserves unclassified source in every export without inventing a language", () => {
+  const unknown = [{ id: "unknown", sequence: 1, at: "00:00", sourceLanguage: "unknown", sourceText: "123", ja: "", en: "" }];
+  const csv = createDownloadContent(unknown, "csv").content;
+  assert.match(csv, /"source_text"/);
+  assert.match(csv, /"unknown","","","123"/);
+  assert.match(createDownloadContent(unknown, "srt").content, /\[言語不明\] 123/);
+  assert.match(createDownloadContent(unknown, "txt").content, /## 言語不明の原文\n\[1 00:00\] 123/);
+  assert.equal(JSON.parse(createDownloadContent(unknown, "json").content)[0].sourceText, "123");
+});

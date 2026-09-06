@@ -2,37 +2,51 @@
 
 import { memo, useLayoutEffect, useRef } from "react";
 import type { Language, Utterance } from "@/lib/translation-types";
+import { getTranscriptDisplay, hasSameTranscriptDisplay, type TranscriptCommit } from "@/lib/transcript-display";
 import { Waveform } from "./ui-icons";
 
 const TranscriptRow = memo(function TranscriptRow({
   language,
   row,
   isLatest,
+  onCommit,
 }: {
   language: Language;
   row: Utterance;
   isLatest: boolean;
+  onCommit?: (commit: TranscriptCommit) => void;
 }) {
+  const display = getTranscriptDisplay(row, language);
+  const { text, kind, sourceFinal } = display;
+  useLayoutEffect(() => {
+    if (text.trim() && kind) {
+      onCommit?.({ rowId: row.id, sequence: row.sequence, kind, language, sourceFinal });
+    }
+  }, [kind, language, onCommit, row.id, row.sequence, sourceFinal, text]);
   return (
     <article className={`transcript-row ${isLatest ? "is-latest" : ""} ${row.status === "draft" ? "is-draft" : ""}`}>
       <div className="row-meta">
         <span className="row-number">{String(row.sequence).padStart(2, "0")}</span>
         <time>{row.at}</time>
         <span className={`source-tag source-${row.sourceLanguage}`}>
-          {row.sourceLanguage === "unknown" ? "処理中" : row.sourceLanguage === language ? "原文" : "翻訳"}
+          {display.label}
         </span>
       </div>
-      <p lang={language}>{row[language] || "…"}</p>
+      <p lang={display.textLanguage}>{display.text || "…"}</p>
     </article>
   );
-});
+}, (previous, next) => previous.language === next.language &&
+  previous.isLatest === next.isLatest && previous.onCommit === next.onCommit &&
+  hasSameTranscriptDisplay(previous.row, next.row, next.language));
 
-export function TranscriptPanel({
+export const TranscriptPanel = memo(function TranscriptPanel({
   language,
   rows,
+  onCommit,
 }: {
   language: Language;
   rows: Utterance[];
+  onCommit?: (commit: TranscriptCommit) => void;
 }) {
   const isJapanese = language === "ja";
   const listRef = useRef<HTMLDivElement>(null);
@@ -69,10 +83,13 @@ export function TranscriptPanel({
               language={language}
               row={row}
               isLatest={index === rows.length - 1}
+              onCommit={onCommit}
             />
           ))
         )}
       </div>
     </section>
   );
-}
+}, (previous, next) => previous.language === next.language &&
+  previous.onCommit === next.onCommit && previous.rows.length === next.rows.length &&
+  previous.rows.every((row, index) => hasSameTranscriptDisplay(row, next.rows[index], next.language)));
